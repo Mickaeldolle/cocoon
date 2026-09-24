@@ -1,0 +1,33 @@
+# Environment and local state
+.env
+.env.*
+*.local
+!.env.example
+
+# JavaScript / Expo
+node_modules/
+.pnpm-store/
+.expo/
+.expo-shared/
+dist/
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.uv-cache/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+hermes-agent/
+
+docs/
+*.md

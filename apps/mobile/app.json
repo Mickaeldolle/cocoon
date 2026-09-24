@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Cocoon",
+    "slug": "cocoon",
+    "version": "0.1.0",
+    "scheme": "cocoon",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-router",
+      "expo-notifications",
+      "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Autoriser Cocoon à utiliser Face ID pour déverrouiller l’espace privé."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Autoriser Cocoon à écouter votre message vocal pour le transcrire.",
+          "recordAudioAndroid": true,
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": false
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "bundleIdentifier": "com.example.cocoon"
+    },
+    "android": {
+      "package": "com.example.cocoon",
+      "softwareKeyboardLayoutMode": "resize"
+    }
+  }
+}
