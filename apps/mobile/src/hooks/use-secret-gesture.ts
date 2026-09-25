@@ -1,13 +1,7 @@
 import { useCallback, useMemo, useRef } from 'react';
-import { PanResponder, Platform } from 'react-native';
+import { PanResponder } from 'react-native';
 
 type Direction = 'right' | 'up';
-
-type PointerEventLike = {
-  nativeEvent?: { pageX?: number; pageY?: number };
-  pageX?: number;
-  pageY?: number;
-};
 
 const expected: readonly Direction[] = ['right', 'right', 'up'];
 const recognitionDistance = 64;
@@ -30,21 +24,14 @@ function directionFromDelta(
   return null;
 }
 
-function pointFrom(event: PointerEventLike) {
-  const source = event.nativeEvent ?? event;
-  return { x: source.pageX ?? 0, y: source.pageY ?? 0 };
-}
-
-/** Recognises → → ↑ using the native responder, while preserving ordinary vertical scrolling. */
+/** Recognises → → ↑ with the responder shared by native and web. */
 export function useSecretGesture(onRecognized: () => void) {
   const index = useRef(0);
   const startedAt = useRef<number | null>(null);
-  const browserStart = useRef<{ x: number; y: number } | null>(null);
 
   const reset = useCallback(() => {
     index.current = 0;
     startedAt.current = null;
-    browserStart.current = null;
   }, []);
 
   const record = useCallback(
@@ -71,6 +58,8 @@ export function useSecretGesture(onRecognized: () => void) {
     [onRecognized, reset],
   );
 
+  // PanResponder.create retains these callbacks; it does not run them during render.
+  /* eslint-disable react-hooks/refs, react-hooks/purity -- Gesture callbacks run after render. */
   const panResponder = useMemo(
     () =>
       PanResponder.create({
@@ -93,22 +82,7 @@ export function useSecretGesture(onRecognized: () => void) {
       }),
     [record, reset],
   );
+  /* eslint-enable react-hooks/refs, react-hooks/purity */
 
-  const onPointerDown = useCallback((event: PointerEventLike) => {
-    browserStart.current = pointFrom(event);
-  }, []);
-
-  const onPointerUp = useCallback(
-    (event: PointerEventLike) => {
-      const start = browserStart.current;
-      browserStart.current = null;
-      if (!start) return;
-      const end = pointFrom(event);
-      record(directionFromDelta(end.x - start.x, end.y - start.y, recognitionDistance));
-    },
-    [record],
-  );
-
-  if (Platform.OS === 'web') return { onPointerDown, onPointerUp };
   return panResponder.panHandlers;
 }

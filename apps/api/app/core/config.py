@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 source_path = Path(__file__).resolve()
@@ -49,6 +49,27 @@ class Settings(BaseSettings):
     worker_interval_seconds: int = Field(default=60, ge=15, le=3600)
     worker_lease_seconds: int = Field(default=600, ge=30, le=3600)
     metrics_token: str | None = Field(default=None, min_length=32)
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def use_psycopg_for_plain_postgres_urls(cls, value: object) -> object:
+        if isinstance(value, str) and value.startswith("postgresql://"):
+            return "postgresql+psycopg://" + value.removeprefix("postgresql://")
+        return value
+
+    @field_validator("assistant_runtime", mode="before")
+    @classmethod
+    def default_blank_runtime(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return "local"
+        return value
+
+    @field_validator("metrics_token", mode="before")
+    @classmethod
+    def disable_blank_metrics_token(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
 
 @lru_cache

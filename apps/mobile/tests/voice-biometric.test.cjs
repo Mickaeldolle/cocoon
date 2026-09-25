@@ -51,6 +51,36 @@ function apiFor(platform, File, fetch) {
   ).assistantApi;
 }
 
+test('API calls use one separator when the configured URL ends with a slash', async () => {
+  const urls = [];
+  const { authApi } = load(
+    'src/services/api.ts',
+    {
+      'expo-file-system': { File: class {} },
+      'expo-secure-store': {},
+      'expo/fetch': { fetch: async () => assert.fail('Unexpected streaming request') },
+      'react-native': { Platform: { OS: 'web' } },
+    },
+    {
+      fetch: async (url) => {
+        urls.push(url);
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+      process: { env: { EXPO_PUBLIC_API_URL: 'https://api.example.com/' } },
+    },
+  );
+
+  await authApi.register({
+    installation_id: 'test-installation',
+    name: 'Browser',
+    platform: 'android',
+    email: 'test@example.com',
+    display_name: 'Test',
+    password: 'test-only-password',
+  });
+  assert.deepEqual(urls, ['https://api.example.com/api/auth/register']);
+});
+
 test('native audio is read through File and only API URLs use fetch', async () => {
   const urls = [];
   const bytes = new Uint8Array([1, 2, 3]).buffer;

@@ -28,6 +28,7 @@ app/modules/assistant/service.py
 app/modules/assistant/tools.py
 app/modules/assistant/voice.py
 app/modules/auth/__init__.py
+app/modules/auth/consents.py
 app/modules/auth/dependencies.py
 app/modules/auth/models.py
 app/modules/auth/router.py
@@ -74,6 +75,7 @@ cocoon_api.egg-info/requires.txt
 cocoon_api.egg-info/top_level.txt
 tests/test_assistant.py
 tests/test_auth.py
+tests/test_config.py
 tests/test_isolation.py
 tests/test_memory.py
 tests/test_neural.py

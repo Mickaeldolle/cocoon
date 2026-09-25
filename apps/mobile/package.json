@@ -9,6 +9,7 @@
     "ios": "expo run:ios",
     "build:web": "expo export -p web",
     "typecheck": "tsc --noEmit",
+    "test": "node --test",
     "test:voice-biometric": "node --test tests/voice-biometric.test.cjs",
     "lint": "expo lint",
     "lint:fix": "expo lint --fix",

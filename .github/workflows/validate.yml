@@ -12,6 +12,24 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql+psycopg://cocoon_ci:ci-only-password@localhost:5432/cocoon_ci
+      JWT_SECRET: ci-only-jwt-secret-with-at-least-32-characters
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: cocoon_ci
+          POSTGRES_USER: cocoon_ci
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cocoon_ci -d cocoon_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         shell: bash
@@ -32,6 +50,10 @@ jobs:
       - name: Install API dependencies
         working-directory: apps/api
         run: uv sync --locked --extra dev
+
+      - name: Apply migrations to disposable PostgreSQL
+        working-directory: apps/api
+        run: uv run alembic upgrade head
 
       - name: Run API tests
         working-directory: apps/api
