@@ -1,9 +1,27 @@
+import json
 from datetime import UTC, datetime, timedelta
+from typing import Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from webauthn import (
+    base64url_to_bytes,
+    generate_authentication_options,
+    generate_registration_options,
+    verify_authentication_response,
+    verify_registration_response,
+)
+from webauthn.helpers import options_to_json
+from webauthn.helpers.structs import (
+    AuthenticatorSelectionCriteria,
+    PublicKeyCredentialDescriptor,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+)
 
 from app.core.config import get_settings
 from app.core.database import get_session
@@ -14,10 +32,19 @@ from app.modules.auth.dependencies import (
     get_authenticated_secret_session,
     get_authenticated_session,
 )
-from app.modules.auth.models import DevelopmentBiometricCredential, SecretAccessSession, User
+from app.modules.auth.models import (
+    DevelopmentBiometricCredential,
+    SecretAccessSession,
+    SecretPasskey,
+    SecretPasskeyChallenge,
+    User,
+)
 from app.modules.auth.schemas import (
     DevelopmentBiometricCredentialRequest,
     SecretAccessResponse,
+    SecretPasskeyCredentialRequest,
+    SecretPasskeyRegistrationRequest,
+    SecretPasskeyStatus,
     SecretUnlockRequest,
 )
 from app.modules.conversations.models import (
@@ -74,6 +101,112 @@ def mint_secret_access(
     return SecretAccessResponse(secret_access_token=token, expires_at=expires_at)
 
 
+def webauthn_relying_party() -> tuple[str, str] | None:
+    """Use one explicitly configured web origin as the trust boundary."""
+    configured = get_settings().webauthn_origin
+    if not configured:
+        return None
+    try:
+        parsed = urlsplit(configured)
+    except ValueError:
+        return None
+    if (
+        not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+        or parsed.scheme not in ("http", "https")
+        or (
+            parsed.scheme == "http"
+            and not (get_settings().app_env == "development" and parsed.hostname == "localhost")
+        )
+    ):
+        return None
+    try:
+        if parsed.port == 0:
+            return None
+    except ValueError:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc.lower()}", parsed.hostname.lower()
+
+
+def require_webauthn_relying_party() -> tuple[str, str]:
+    relying_party = webauthn_relying_party()
+    if relying_party is None:
+        raise HTTPException(status_code=503, detail="Les passkeys ne sont pas configurées.")
+    return relying_party
+
+
+def save_passkey_challenge(
+    *,
+    session: Session,
+    authenticated: AuthenticatedSession,
+    purpose: str,
+    challenge: bytes,
+    origin: str,
+    rp_id: str,
+) -> SecretPasskeyChallenge:
+    now = datetime.now(UTC)
+    session.execute(
+        delete(SecretPasskeyChallenge).where(
+            (SecretPasskeyChallenge.expires_at <= now)
+            | (
+                (SecretPasskeyChallenge.user_session_id == authenticated.user_session.id)
+                & (SecretPasskeyChallenge.purpose == purpose)
+            )
+        )
+    )
+    pending = SecretPasskeyChallenge(
+        user_id=authenticated.user.id,
+        user_session_id=authenticated.user_session.id,
+        purpose=purpose,
+        challenge=challenge,
+        origin=origin,
+        rp_id=rp_id,
+        expires_at=now + timedelta(minutes=5),
+    )
+    session.add(pending)
+    session.commit()
+    return pending
+
+
+def consume_passkey_challenge(
+    *,
+    session: Session,
+    authenticated: AuthenticatedSession,
+    purpose: str,
+    challenge_id: UUID,
+    origin: str,
+    rp_id: str,
+) -> bytes:
+    # A committed DELETE makes even a failed ceremony one-use across API instances.
+    challenge = session.execute(
+        delete(SecretPasskeyChallenge)
+        .where(
+            SecretPasskeyChallenge.id == challenge_id,
+            SecretPasskeyChallenge.user_id == authenticated.user.id,
+            SecretPasskeyChallenge.user_session_id == authenticated.user_session.id,
+            SecretPasskeyChallenge.purpose == purpose,
+            SecretPasskeyChallenge.origin == origin,
+            SecretPasskeyChallenge.rp_id == rp_id,
+            SecretPasskeyChallenge.expires_at > datetime.now(UTC),
+        )
+        .returning(SecretPasskeyChallenge.challenge)
+    ).scalar_one_or_none()
+    session.commit()
+    if challenge is None:
+        raise HTTPException(status_code=401, detail="Vérification expirée. Réessayez.")
+    return challenge
+
+
+def checked_credential(credential: dict[str, Any]) -> dict[str, Any]:
+    if len(json.dumps(credential)) > 32_768:
+        raise HTTPException(status_code=413, detail="Réponse passkey trop volumineuse.")
+    return credential
+
+
 def secret_membership_or_not_found(
     session: Session, conversation_id: UUID, user_id: UUID
 ) -> ConversationMember:
@@ -107,6 +240,227 @@ def unlock_secret_access(
         )
 
     return mint_secret_access(authenticated, session)
+
+
+@router.get("/passkeys/status", response_model=SecretPasskeyStatus)
+def secret_passkey_status(
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> SecretPasskeyStatus:
+    relying_party = webauthn_relying_party()
+    has_passkeys = (
+        relying_party is not None
+        and session.scalar(
+            select(SecretPasskey.id)
+            .where(
+                SecretPasskey.user_id == authenticated.user.id,
+                SecretPasskey.rp_id == relying_party[1],
+            )
+            .limit(1)
+        )
+        is not None
+    )
+    return SecretPasskeyStatus(
+        available=relying_party is not None,
+        has_passkeys=has_passkeys,
+    )
+
+
+@router.post("/passkeys/register/options")
+def secret_passkey_registration_options(
+    payload: SecretPasskeyRegistrationRequest,
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    origin, rp_id = require_webauthn_relying_party()
+    if not verify_password(payload.password, authenticated.user.password_hash):
+        raise HTTPException(status_code=401, detail="Vérification impossible.")
+    existing = session.scalars(
+        select(SecretPasskey).where(
+            SecretPasskey.user_id == authenticated.user.id,
+            SecretPasskey.rp_id == rp_id,
+        )
+    ).all()
+    options = generate_registration_options(
+        rp_id=rp_id,
+        rp_name="Cocoon",
+        user_id=authenticated.user.id.bytes,
+        user_name=authenticated.user.email,
+        user_display_name=authenticated.user.display_name,
+        exclude_credentials=[
+            PublicKeyCredentialDescriptor(id=item.credential_id) for item in existing
+        ],
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement.PREFERRED,
+            user_verification=UserVerificationRequirement.REQUIRED,
+        ),
+    )
+    pending = save_passkey_challenge(
+        session=session,
+        authenticated=authenticated,
+        purpose="register",
+        challenge=options.challenge,
+        origin=origin,
+        rp_id=rp_id,
+    )
+    return {"challenge_id": str(pending.id), "options": json.loads(options_to_json(options))}
+
+
+@router.post("/passkeys/register/verify", response_model=SecretAccessResponse)
+def secret_passkey_registration_verify(
+    payload: SecretPasskeyCredentialRequest,
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> SecretAccessResponse:
+    origin, rp_id = require_webauthn_relying_party()
+    challenge = consume_passkey_challenge(
+        session=session,
+        authenticated=authenticated,
+        purpose="register",
+        challenge_id=payload.challenge_id,
+        origin=origin,
+        rp_id=rp_id,
+    )
+    credential = checked_credential(payload.credential)
+    try:
+        verified = verify_registration_response(
+            credential=credential,
+            expected_challenge=challenge,
+            expected_rp_id=rp_id,
+            expected_origin=origin,
+            require_user_verification=True,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=401, detail="Passkey non validée.") from error
+    session.add(
+        SecretPasskey(
+            user_id=authenticated.user.id,
+            rp_id=rp_id,
+            credential_id=verified.credential_id,
+            public_key=verified.credential_public_key,
+            sign_count=verified.sign_count,
+        )
+    )
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=409, detail="Cette passkey est déjà enregistrée."
+        ) from error
+    return mint_secret_access(authenticated, session)
+
+
+@router.post("/passkeys/unlock/options")
+def secret_passkey_unlock_options(
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    origin, rp_id = require_webauthn_relying_party()
+    existing = session.scalars(
+        select(SecretPasskey).where(
+            SecretPasskey.user_id == authenticated.user.id,
+            SecretPasskey.rp_id == rp_id,
+        )
+    ).all()
+    if not existing:
+        raise HTTPException(status_code=404, detail="Aucune passkey enregistrée.")
+    options = generate_authentication_options(
+        rp_id=rp_id,
+        allow_credentials=[
+            PublicKeyCredentialDescriptor(id=item.credential_id) for item in existing
+        ],
+        user_verification=UserVerificationRequirement.REQUIRED,
+    )
+    pending = save_passkey_challenge(
+        session=session,
+        authenticated=authenticated,
+        purpose="unlock",
+        challenge=options.challenge,
+        origin=origin,
+        rp_id=rp_id,
+    )
+    return {"challenge_id": str(pending.id), "options": json.loads(options_to_json(options))}
+
+
+@router.post("/passkeys/unlock/verify", response_model=SecretAccessResponse)
+def secret_passkey_unlock_verify(
+    payload: SecretPasskeyCredentialRequest,
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> SecretAccessResponse:
+    origin, rp_id = require_webauthn_relying_party()
+    challenge = consume_passkey_challenge(
+        session=session,
+        authenticated=authenticated,
+        purpose="unlock",
+        challenge_id=payload.challenge_id,
+        origin=origin,
+        rp_id=rp_id,
+    )
+    credential = checked_credential(payload.credential)
+    encoded_id = credential.get("id")
+    if not isinstance(encoded_id, str) or len(encoded_id) > 2048:
+        raise HTTPException(status_code=401, detail="Passkey non validée.")
+    try:
+        credential_id = base64url_to_bytes(encoded_id)
+    except Exception as error:
+        raise HTTPException(status_code=401, detail="Passkey non validée.") from error
+    stored = session.scalar(
+        select(SecretPasskey)
+        .where(
+            SecretPasskey.user_id == authenticated.user.id,
+            SecretPasskey.rp_id == rp_id,
+            SecretPasskey.credential_id == credential_id,
+        )
+        .with_for_update()
+    )
+    if stored is None:
+        raise HTTPException(status_code=401, detail="Passkey non validée.")
+    try:
+        verified = verify_authentication_response(
+            credential=credential,
+            expected_challenge=challenge,
+            expected_rp_id=rp_id,
+            expected_origin=origin,
+            credential_public_key=stored.public_key,
+            credential_current_sign_count=stored.sign_count,
+            require_user_verification=True,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=401, detail="Passkey non validée.") from error
+    if verified.credential_id != stored.credential_id:
+        raise HTTPException(status_code=401, detail="Passkey non validée.")
+    stored.sign_count = verified.new_sign_count
+    stored.last_used_at = datetime.now(UTC)
+    session.commit()
+    return mint_secret_access(authenticated, session)
+
+
+@router.delete("/passkeys", status_code=status.HTTP_204_NO_CONTENT)
+def revoke_secret_passkeys(
+    payload: SecretPasskeyRegistrationRequest,
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> Response:
+    if not verify_password(payload.password, authenticated.user.password_hash):
+        raise HTTPException(status_code=401, detail="Vérification impossible.")
+    session.execute(
+        delete(SecretPasskeyChallenge).where(
+            SecretPasskeyChallenge.user_id == authenticated.user.id
+        )
+    )
+    session.execute(delete(SecretPasskey).where(SecretPasskey.user_id == authenticated.user.id))
+    session.execute(
+        update(SecretAccessSession)
+        .where(
+            SecretAccessSession.user_id == authenticated.user.id,
+            SecretAccessSession.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC))
+    )
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/development-biometric/enroll", status_code=status.HTTP_204_NO_CONTENT)
@@ -233,28 +587,32 @@ def create_secret_conversation(
     )
     session.add(conversation)
     session.flush()
-    session.add_all([
-        ConversationMember(
-            conversation_id=conversation.id,
-            user_id=authenticated.authenticated.user.id,
-            role=ConversationRole.ADMIN,
-            status=ConversationMemberStatus.ACCEPTED,
-            is_hidden=True,
-        ),
-        ConversationMember(
-            conversation_id=conversation.id,
-            user_id=invited_user.id,
-            role=ConversationRole.MEMBER,
-            status=ConversationMemberStatus.PENDING,
-            is_hidden=True,
-        ),
-    ])
+    session.add_all(
+        [
+            ConversationMember(
+                conversation_id=conversation.id,
+                user_id=authenticated.authenticated.user.id,
+                role=ConversationRole.ADMIN,
+                status=ConversationMemberStatus.ACCEPTED,
+                is_hidden=True,
+            ),
+            ConversationMember(
+                conversation_id=conversation.id,
+                user_id=invited_user.id,
+                role=ConversationRole.MEMBER,
+                status=ConversationMemberStatus.PENDING,
+                is_hidden=True,
+            ),
+        ]
+    )
     session.commit()
     session.refresh(conversation)
-    membership = session.scalar(select(ConversationMember).where(
-        ConversationMember.conversation_id == conversation.id,
-        ConversationMember.user_id == authenticated.authenticated.user.id,
-    ))
+    membership = session.scalar(
+        select(ConversationMember).where(
+            ConversationMember.conversation_id == conversation.id,
+            ConversationMember.user_id == authenticated.authenticated.user.id,
+        )
+    )
     return conversation_response(conversation, membership)
 
 
@@ -264,12 +622,14 @@ def update_secret_invitation(
     authenticated: AuthenticatedSecretSession,
     session: Session,
 ) -> ConversationResponse:
-    membership = session.scalar(select(ConversationMember).where(
-        ConversationMember.conversation_id == conversation_id,
-        ConversationMember.user_id == authenticated.authenticated.user.id,
-        ConversationMember.status == ConversationMemberStatus.PENDING,
-        ConversationMember.is_hidden.is_(True),
-    ))
+    membership = session.scalar(
+        select(ConversationMember).where(
+            ConversationMember.conversation_id == conversation_id,
+            ConversationMember.user_id == authenticated.authenticated.user.id,
+            ConversationMember.status == ConversationMemberStatus.PENDING,
+            ConversationMember.is_hidden.is_(True),
+        )
+    )
     if membership is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation introuvable.")
     conversation = session.get(Conversation, conversation_id)

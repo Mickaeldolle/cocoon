@@ -21,6 +21,12 @@ export type SecretAccess = {
   expires_at: string;
 };
 
+export type SecretPasskeyStatus = { available: boolean; has_passkeys: boolean };
+export type SecretPasskeyCeremony = {
+  challenge_id: string;
+  options: Record<string, unknown>;
+};
+
 export type CurrentUser = {
   id: string;
   email: string;
@@ -464,6 +470,47 @@ export const secretApi = {
     call<SecretAccess>(
       '/api/secret/unlock',
       withAccessToken(accessToken, { method: 'POST', body: JSON.stringify({ password }) }),
+    ),
+  passkeyStatus: (accessToken: string) =>
+    call<SecretPasskeyStatus>('/api/secret/passkeys/status', withAccessToken(accessToken)),
+  passkeyRegistrationOptions: (accessToken: string, password: string) =>
+    call<SecretPasskeyCeremony>(
+      '/api/secret/passkeys/register/options',
+      withAccessToken(accessToken, { method: 'POST', body: JSON.stringify({ password }) }),
+    ),
+  verifyPasskeyRegistration: (
+    accessToken: string,
+    challengeId: string,
+    credential: Record<string, unknown>,
+  ) =>
+    call<SecretAccess>(
+      '/api/secret/passkeys/register/verify',
+      withAccessToken(accessToken, {
+        method: 'POST',
+        body: JSON.stringify({ challenge_id: challengeId, credential }),
+      }),
+    ),
+  passkeyUnlockOptions: (accessToken: string) =>
+    call<SecretPasskeyCeremony>(
+      '/api/secret/passkeys/unlock/options',
+      withAccessToken(accessToken, { method: 'POST' }),
+    ),
+  verifyPasskeyUnlock: (
+    accessToken: string,
+    challengeId: string,
+    credential: Record<string, unknown>,
+  ) =>
+    call<SecretAccess>(
+      '/api/secret/passkeys/unlock/verify',
+      withAccessToken(accessToken, {
+        method: 'POST',
+        body: JSON.stringify({ challenge_id: challengeId, credential }),
+      }),
+    ),
+  revokePasskeys: (accessToken: string, password: string) =>
+    call<void>(
+      '/api/secret/passkeys',
+      withAccessToken(accessToken, { method: 'DELETE', body: JSON.stringify({ password }) }),
     ),
   lock: (accessToken: string, secretAccessToken: string) =>
     call<void>(

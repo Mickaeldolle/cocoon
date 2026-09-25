@@ -1,7 +1,16 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -67,9 +76,7 @@ class UserConsent(Base):
     """Versioned, revocable consent owned by exactly one account."""
 
     __tablename__ = "user_consents"
-    __table_args__ = (
-        UniqueConstraint("user_id", "policy_key", name="uq_user_consent_policy"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "policy_key", name="uq_user_consent_policy"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -113,4 +120,37 @@ class DevelopmentBiometricCredential(Base):
     )
     credential_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SecretPasskey(Base):
+    """Verified WebAuthn public key for one user's secret-area step-up."""
+
+    __tablename__ = "secret_passkeys"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    rp_id: Mapped[str] = mapped_column(String(253))
+    credential_id: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)
+    sign_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SecretPasskeyChallenge(Base):
+    """Short-lived, single-use ceremony bound to an authenticated application session."""
+
+    __tablename__ = "secret_passkey_challenges"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    user_session_id: Mapped[UUID] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+    purpose: Mapped[str] = mapped_column(String(16))
+    challenge: Mapped[bytes] = mapped_column(LargeBinary)
+    origin: Mapped[str] = mapped_column(String(300))
+    rp_id: Mapped[str] = mapped_column(String(253))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

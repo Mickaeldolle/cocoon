@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -74,6 +75,20 @@ class DevelopmentBiometricCredentialRequest(BaseModel):
 class SecretAccessResponse(BaseModel):
     secret_access_token: str
     expires_at: datetime
+
+
+class SecretPasskeyStatus(BaseModel):
+    available: bool
+    has_passkeys: bool
+
+
+class SecretPasskeyRegistrationRequest(BaseModel):
+    password: str = Field(min_length=8, max_length=256)
+
+
+class SecretPasskeyCredentialRequest(BaseModel):
+    challenge_id: UUID
+    credential: dict[str, Any]
 
 
 class UserResponse(BaseModel):

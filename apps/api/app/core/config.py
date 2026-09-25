@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     normal_access_token_minutes: int = Field(default=30, ge=15, le=60)
     secret_access_minutes: int = Field(default=5, ge=1, le=15)
     development_biometric_unlock_enabled: bool = False
+    # Exact origin of the web app that invokes navigator.credentials (not the API URL).
+    webauthn_origin: str | None = None
     refresh_token_days: int = Field(default=30, ge=1, le=90)
     s3_endpoint_url: str | None = None
     s3_bucket: str | None = None
