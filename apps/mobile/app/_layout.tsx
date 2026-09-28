@@ -6,7 +6,10 @@ import { useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import './global.css';
+
 import { useThemeStore } from '@/src/stores/theme-store';
+import { useWebViewportHeight } from '@/src/hooks/use-web-viewport-height';
 import { secretApi } from '@/src/services/api';
 import {
   routeForPersonalNotification,
@@ -16,6 +19,7 @@ import { useSecretAccessStore } from '@/src/stores/secret-access-store';
 import { useSessionStore } from '@/src/stores/session-store';
 
 export default function RootLayout() {
+  useWebViewportHeight();
   const [queryClient] = useState(() => new QueryClient());
   useFonts({ MaterialSymbols_400Regular });
   const restoreTheme = useThemeStore((state) => state.restore);

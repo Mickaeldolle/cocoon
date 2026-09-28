@@ -76,9 +76,20 @@ export async function registerWebPasskey(
       id: fromBase64url(item.id),
     })),
   };
-  const credential = (await navigator.credentials.create({
-    publicKey,
-  })) as PublicKeyCredential | null;
+  let credential: PublicKeyCredential | null;
+  try {
+    credential = (await navigator.credentials.create({ publicKey })) as PublicKeyCredential | null;
+  } catch (caught) {
+    if (
+      caught instanceof DOMException &&
+      caught.message.toLowerCase().includes('credential manager')
+    ) {
+      throw new Error(
+        'Chrome ne parvient pas à accéder au gestionnaire de passkeys Android. Vérifiez le gestionnaire activé dans les réglages du téléphone, puis réessayez.',
+      );
+    }
+    throw caught;
+  }
   if (!credential) throw new Error('Création de la passkey annulée.');
   const response = credential.response as AuthenticatorAttestationResponse;
   return secretApi.verifyPasskeyRegistration(accessToken, ceremony.challenge_id, {
