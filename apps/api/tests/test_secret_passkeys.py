@@ -130,7 +130,12 @@ def test_web_passkey_registration_and_unlock(client: TestClient, monkeypatch) ->
             "/api/secret/passkeys/register/options", json={"password": PASSWORD}, headers=headers
         ).json()
         assert options["options"]["rp"]["id"] == RP_ID
-        assert options["options"]["authenticatorSelection"]["userVerification"] == "required"
+        assert options["options"]["authenticatorSelection"] == {
+            "authenticatorAttachment": "platform",
+            "residentKey": "required",
+            "requireResidentKey": True,
+            "userVerification": "required",
+        }
         assert len(base64url_to_bytes(options["options"]["challenge"])) >= 32
         credential, private_key = registration_response(options["options"]["challenge"])
         payload = {"challenge_id": options["challenge_id"], "credential": credential}

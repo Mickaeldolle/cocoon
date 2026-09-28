@@ -16,6 +16,7 @@ from webauthn import (
 )
 from webauthn.helpers import options_to_json
 from webauthn.helpers.structs import (
+    AuthenticatorAttachment,
     AuthenticatorSelectionCriteria,
     PublicKeyCredentialDescriptor,
     ResidentKeyRequirement,
@@ -251,7 +252,9 @@ def secret_passkey_registration_options(
             PublicKeyCredentialDescriptor(id=item.credential_id) for item in existing
         ],
         authenticator_selection=AuthenticatorSelectionCriteria(
-            resident_key=ResidentKeyRequirement.PREFERRED,
+            authenticator_attachment=AuthenticatorAttachment.PLATFORM,
+            resident_key=ResidentKeyRequirement.REQUIRED,
+            require_resident_key=True,
             user_verification=UserVerificationRequirement.REQUIRED,
         ),
     )
