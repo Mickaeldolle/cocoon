@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,7 +13,22 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ApiError, authApi, personalApi, type Device, type Profile } from '@/src/services/api';
+import {
+  ApiError,
+  authApi,
+  personalApi,
+  secretApi,
+  loadRefreshToken,
+  type Device,
+  type Profile,
+} from '@/src/services/api';
+import { registerWebPasskey, webPasskeysSupported } from '@/src/services/web-passkeys';
+import {
+  canUseAndroidBiometrics,
+  disableAndroidBiometricLogin,
+  enableAndroidBiometricLogin,
+  isAndroidBiometricLoginEnabled,
+} from '@/src/services/android-biometric-login';
 import { darkTheme, lightTheme, type ColorTokens } from '@/src/theme';
 import { useSessionStore } from '@/src/stores/session-store';
 import { useThemeStore } from '@/src/stores/theme-store';
@@ -97,6 +113,12 @@ export default function ProfileScreen() {
           </View>
         </View>
         <DeviceManager token={token!} devices={devices.data ?? []} styles={styles} />
+        {Platform.OS === 'web' && token ? (
+          <PasskeyManager token={token} userId={user!.id} styles={styles} colors={colors} />
+        ) : null}
+        {Platform.OS === 'android' && token ? (
+          <AndroidBiometricSettings styles={styles} colors={colors} />
+        ) : null}
         <Pressable
           accessibilityRole="button"
           onPress={() => router.push('/memory' as never)}
@@ -164,6 +186,247 @@ export default function ProfileScreen() {
         </Pressable>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function AndroidBiometricSettings({
+  styles,
+  colors,
+}: {
+  styles: ReturnType<typeof makeStyles>;
+  colors: ColorTokens;
+}) {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [available, setAvailable] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([isAndroidBiometricLoginEnabled(), canUseAndroidBiometrics()])
+      .then(([saved, supported]) => {
+        if (active) {
+          setEnabled(saved);
+          setAvailable(supported);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setEnabled(false);
+          setError('Impossible de vérifier la biométrie de ce téléphone.');
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function changeSetting() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      if (enabled) {
+        await disableAndroidBiometricLogin();
+        setEnabled(false);
+        setNotice('La session se rouvrira sans empreinte au prochain démarrage.');
+      } else {
+        if (!(await loadRefreshToken())) {
+          throw new Error('Reconnectez-vous avec votre mot de passe avant d’activer l’empreinte.');
+        }
+        await enableAndroidBiometricLogin();
+        setEnabled(true);
+        setNotice('L’empreinte sera demandée au prochain démarrage de Cocoon.');
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Modification impossible.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View style={styles.devicesCard}>
+      <Text style={styles.devicesTitle}>Ouverture par empreinte</Text>
+      <Text style={styles.devicesIntro}>
+        Après une première connexion, rouvrez votre session sur ce téléphone avec l’empreinte.
+      </Text>
+      {enabled === null ? (
+        <ActivityIndicator color={colors.spruce} style={styles.loader} />
+      ) : !available && !enabled ? (
+        <Text style={styles.help}>
+          Configurez une empreinte ou une biométrie forte dans les réglages Android.
+        </Text>
+      ) : (
+        <>
+          {!available ? (
+            <Text style={styles.help}>
+              La biométrie configurée n’est plus disponible. Vous pouvez la désactiver ici.
+            </Text>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ selected: enabled }}
+            disabled={busy}
+            onPress={() => void changeSetting()}
+            style={[styles.primary, busy && styles.disabled]}
+          >
+            <Text style={styles.primaryText}>
+              {enabled
+                ? 'Désactiver l’ouverture par empreinte'
+                : 'Activer l’ouverture par empreinte'}
+            </Text>
+          </Pressable>
+        </>
+      )}
+      {notice ? (
+        <Text accessibilityRole="alert" style={styles.help}>
+          {notice}
+        </Text>
+      ) : null}
+      {error ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {error}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function PasskeyManager({
+  token,
+  userId,
+  styles,
+  colors,
+}: {
+  token: string;
+  userId: string;
+  styles: ReturnType<typeof makeStyles>;
+  colors: ColorTokens;
+}) {
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const supported = webPasskeysSupported();
+  const status = useQuery({
+    queryKey: ['auth', 'passkeys', userId],
+    queryFn: () => secretApi.passkeyStatus(token),
+    enabled: supported,
+    retry: false,
+  });
+
+  async function createPasskey() {
+    if (!password || busy) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await registerWebPasskey(token, password);
+      setNotice('Passkey créée. Vous pouvez maintenant l’utiliser pour vous connecter.');
+      void status.refetch();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Création de la passkey impossible.');
+    } finally {
+      setPassword('');
+      setBusy(false);
+    }
+  }
+
+  async function revokePasskeys() {
+    if (!password || busy || !window.confirm('Supprimer toutes les passkeys de ce compte ?'))
+      return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await secretApi.revokePasskeys(token, password);
+      setNotice('Passkeys supprimées. La connexion par mot de passe reste disponible.');
+      void status.refetch();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Suppression des passkeys impossible.');
+    } finally {
+      setPassword('');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View style={styles.devicesCard}>
+      <Text style={styles.devicesTitle}>Passkeys</Text>
+      <Text style={styles.devicesIntro}>
+        Créez une passkey pour vous connecter sur le web et déverrouiller l’espace protégé.
+      </Text>
+      {!supported ? (
+        <Text style={styles.help}>Utilisez un navigateur compatible sur une page HTTPS.</Text>
+      ) : status.isPending ? (
+        <ActivityIndicator color={colors.spruce} style={styles.loader} />
+      ) : status.isError ? (
+        <>
+          <Text accessibilityRole="alert" style={styles.error}>
+            État des passkeys indisponible. Vérifiez la connexion.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => void status.refetch()}
+            style={styles.retry}
+          >
+            <Text style={styles.retryText}>Réessayer</Text>
+          </Pressable>
+        </>
+      ) : !status.data?.available ? (
+        <Text style={styles.help}>
+          Les passkeys ne sont pas configurées sur l’API. Définissez WEBAUTHN_ORIGIN pour ce site.
+        </Text>
+      ) : (
+        <>
+          <Text style={styles.help}>
+            {status.data.has_passkeys
+              ? 'Une passkey est enregistrée pour ce compte.'
+              : 'Aucune passkey enregistrée. Confirmez votre mot de passe pour en créer une.'}
+          </Text>
+          <Text style={styles.label}>Mot de passe du compte</Text>
+          <TextInput
+            accessibilityLabel="Mot de passe du compte pour gérer les passkeys"
+            autoComplete="current-password"
+            onChangeText={setPassword}
+            secureTextEntry
+            style={styles.input}
+            value={password}
+          />
+          <Pressable
+            accessibilityRole="button"
+            disabled={!password || busy}
+            onPress={() => void createPasskey()}
+            style={[styles.primary, (!password || busy) && styles.disabled]}
+          >
+            <Text style={styles.primaryText}>Créer une passkey</Text>
+          </Pressable>
+          {status.data.has_passkeys ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={!password || busy}
+              onPress={() => void revokePasskeys()}
+              style={[styles.signOut, (!password || busy) && styles.disabled]}
+            >
+              <Text style={styles.signOutText}>Supprimer mes passkeys</Text>
+            </Pressable>
+          ) : null}
+        </>
+      )}
+      {notice ? (
+        <Text accessibilityRole="alert" style={styles.help}>
+          {notice}
+        </Text>
+      ) : null}
+      {error ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {error}
+        </Text>
+      ) : null}
+    </View>
   );
 }
 

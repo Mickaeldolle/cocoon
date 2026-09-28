@@ -20,12 +20,25 @@ type Props = {
   error: string | null;
   showDisplayName?: boolean;
   onSubmit: (credentials: Credentials) => Promise<void>;
+  onPasskey?: (email: string) => Promise<void>;
+  passkeyAvailable?: boolean;
+  onBiometric?: () => Promise<void>;
 };
 
-export function AuthForm({ actionLabel, busy, error, showDisplayName = false, onSubmit }: Props) {
+export function AuthForm({
+  actionLabel,
+  busy,
+  error,
+  showDisplayName = false,
+  onSubmit,
+  onPasskey,
+  passkeyAvailable = false,
+  onBiometric,
+}: Props) {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const {
     control,
+    getValues,
     handleSubmit,
     formState: { errors },
   } = useForm<Credentials>({
@@ -129,6 +142,37 @@ export function AuthForm({ actionLabel, busy, error, showDisplayName = false, on
           <Text style={styles.submitText}>{actionLabel}</Text>
         )}
       </Pressable>
+      {onBiometric ? (
+        <Pressable
+          accessibilityRole="button"
+          disabled={busy}
+          onPress={() => void onBiometric()}
+          style={[styles.passkey, busy && styles.submitBusy]}
+        >
+          <Text style={styles.passkeyText}>Rouvrir avec l’empreinte</Text>
+        </Pressable>
+      ) : null}
+      {onPasskey ? (
+        passkeyAvailable ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              disabled={busy}
+              onPress={() => void onPasskey(getValues('email'))}
+              style={[styles.passkey, busy && styles.submitBusy]}
+            >
+              <Text style={styles.passkeyText}>Se connecter avec une passkey</Text>
+            </Pressable>
+            <Text style={styles.passkeyHint}>
+              Première utilisation ? Créez votre passkey depuis le profil après connexion.
+            </Text>
+          </>
+        ) : (
+          <Text style={styles.passkeyHint}>
+            La passkey nécessite un navigateur compatible sur une page HTTPS.
+          </Text>
+        )
+      ) : null}
     </View>
   );
 }
@@ -181,6 +225,16 @@ const styles = StyleSheet.create({
   submitPressed: { backgroundColor: theme.colors.ink },
   submitBusy: { opacity: 0.7 },
   submitText: { color: theme.colors.white, fontSize: 16, fontWeight: '700' },
+  passkey: {
+    alignItems: 'center',
+    borderColor: theme.colors.spruce,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    justifyContent: 'center',
+    minHeight: 52,
+  },
+  passkeyText: { color: theme.colors.spruce, fontSize: 16, fontWeight: '700' },
+  passkeyHint: { color: theme.colors.muted, fontSize: 13, lineHeight: 19 },
   error: { backgroundColor: '#FDECEE', borderRadius: 12, color: theme.colors.berry, padding: 12 },
   fieldError: { color: theme.colors.berry, fontSize: 13 },
 });

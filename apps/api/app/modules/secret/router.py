@@ -1,7 +1,6 @@
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -46,6 +45,11 @@ from app.modules.auth.schemas import (
     SecretPasskeyRegistrationRequest,
     SecretPasskeyStatus,
     SecretUnlockRequest,
+)
+from app.modules.auth.webauthn_config import (
+    checked_credential,
+    require_webauthn_relying_party,
+    webauthn_relying_party,
 )
 from app.modules.conversations.models import (
     Conversation,
@@ -99,44 +103,6 @@ def mint_secret_access(
     )
     session.commit()
     return SecretAccessResponse(secret_access_token=token, expires_at=expires_at)
-
-
-def webauthn_relying_party() -> tuple[str, str] | None:
-    """Use one explicitly configured web origin as the trust boundary."""
-    configured = get_settings().webauthn_origin
-    if not configured:
-        return None
-    try:
-        parsed = urlsplit(configured)
-    except ValueError:
-        return None
-    if (
-        not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.path not in ("", "/")
-        or parsed.query
-        or parsed.fragment
-        or parsed.scheme not in ("http", "https")
-        or (
-            parsed.scheme == "http"
-            and not (get_settings().app_env == "development" and parsed.hostname == "localhost")
-        )
-    ):
-        return None
-    try:
-        if parsed.port == 0:
-            return None
-    except ValueError:
-        return None
-    return f"{parsed.scheme}://{parsed.netloc.lower()}", parsed.hostname.lower()
-
-
-def require_webauthn_relying_party() -> tuple[str, str]:
-    relying_party = webauthn_relying_party()
-    if relying_party is None:
-        raise HTTPException(status_code=503, detail="Les passkeys ne sont pas configurées.")
-    return relying_party
 
 
 def save_passkey_challenge(
@@ -199,12 +165,6 @@ def consume_passkey_challenge(
     if challenge is None:
         raise HTTPException(status_code=401, detail="Vérification expirée. Réessayez.")
     return challenge
-
-
-def checked_credential(credential: dict[str, Any]) -> dict[str, Any]:
-    if len(json.dumps(credential)) > 32_768:
-        raise HTTPException(status_code=413, detail="Réponse passkey trop volumineuse.")
-    return credential
 
 
 def secret_membership_or_not_found(

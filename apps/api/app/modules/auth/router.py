@@ -1,11 +1,20 @@
+import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from secrets import token_bytes
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from webauthn import (
+    base64url_to_bytes,
+    generate_authentication_options,
+    verify_authentication_response,
+)
+from webauthn.helpers import options_to_json
+from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
 
 from app.core.database import get_session
 from app.core.security import hash_password
@@ -15,12 +24,21 @@ from app.modules.auth.dependencies import (
     get_authenticated_session,
     get_current_user,
 )
-from app.modules.auth.models import Device, User, UserConsent, UserSession
+from app.modules.auth.models import (
+    Device,
+    PasskeyLoginChallenge,
+    SecretPasskey,
+    User,
+    UserConsent,
+    UserSession,
+)
 from app.modules.auth.schemas import (
     ConsentResponse,
     ConsentUpdate,
     DeviceResponse,
     LoginRequest,
+    PasskeyLoginOptionsRequest,
+    PasskeyLoginVerifyRequest,
     PushTokenRequest,
     RefreshRequest,
     RegisterRequest,
@@ -28,6 +46,7 @@ from app.modules.auth.schemas import (
     UserResponse,
 )
 from app.modules.auth.service import authenticate, issue_session, rotate_session
+from app.modules.auth.webauthn_config import checked_credential, require_webauthn_relying_party
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 _POLICY_KEY = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -68,6 +87,106 @@ def register(payload: RegisterRequest, session: Session = Depends(get_session)) 
 @router.post("/login", response_model=TokenPair)
 def login(payload: LoginRequest, session: Session = Depends(get_session)) -> TokenPair:
     user = authenticate(session, payload.email, payload.password)
+    tokens = issue_session(session, user, payload)
+    session.commit()
+    return tokens
+
+
+@router.post("/passkeys/login/options")
+def passkey_login_options(
+    payload: PasskeyLoginOptionsRequest, session: Session = Depends(get_session)
+) -> dict:
+    origin, rp_id = require_webauthn_relying_party()
+    user = session.scalar(select(User).where(User.email == payload.email.lower(), User.is_active))
+    credentials = (
+        session.scalars(
+            select(SecretPasskey).where(
+                SecretPasskey.user_id == user.id, SecretPasskey.rp_id == rp_id
+            )
+        ).all()
+        if user is not None
+        else []
+    )
+    # A dummy descriptor keeps an unknown account and an account without a passkey
+    # on the same browser path. Neither can complete verification.
+    descriptors = [
+        PublicKeyCredentialDescriptor(id=item.credential_id) for item in credentials
+    ] or [PublicKeyCredentialDescriptor(id=token_bytes(32))]
+    options = generate_authentication_options(
+        rp_id=rp_id,
+        allow_credentials=descriptors,
+        user_verification=UserVerificationRequirement.REQUIRED,
+    )
+    now = datetime.now(UTC)
+    session.execute(delete(PasskeyLoginChallenge).where(PasskeyLoginChallenge.expires_at <= now))
+    pending = PasskeyLoginChallenge(
+        user_id=user.id if credentials and user is not None else None,
+        challenge=options.challenge,
+        origin=origin,
+        rp_id=rp_id,
+        expires_at=now + timedelta(minutes=5),
+    )
+    session.add(pending)
+    session.commit()
+    return {"challenge_id": str(pending.id), "options": json.loads(options_to_json(options))}
+
+
+@router.post("/passkeys/login/verify", response_model=TokenPair)
+def passkey_login_verify(
+    payload: PasskeyLoginVerifyRequest, session: Session = Depends(get_session)
+) -> TokenPair:
+    origin, rp_id = require_webauthn_relying_party()
+    if payload.platform != "web":
+        raise HTTPException(status_code=400, detail="Connexion passkey réservée au navigateur.")
+    consumed = session.execute(
+        delete(PasskeyLoginChallenge)
+        .where(
+            PasskeyLoginChallenge.id == payload.challenge_id,
+            PasskeyLoginChallenge.origin == origin,
+            PasskeyLoginChallenge.rp_id == rp_id,
+            PasskeyLoginChallenge.expires_at > datetime.now(UTC),
+        )
+        .returning(PasskeyLoginChallenge.user_id, PasskeyLoginChallenge.challenge)
+    ).first()
+    session.commit()
+    if consumed is None or consumed.user_id is None:
+        raise HTTPException(status_code=401, detail="Passkey non validée.")
+    credential = checked_credential(payload.credential)
+    encoded_id = credential.get("id")
+    if not isinstance(encoded_id, str) or len(encoded_id) > 2048:
+        raise HTTPException(status_code=401, detail="Passkey non validée.")
+    try:
+        credential_id = base64url_to_bytes(encoded_id)
+    except Exception as error:
+        raise HTTPException(status_code=401, detail="Passkey non validée.") from error
+    stored = session.scalar(
+        select(SecretPasskey)
+        .where(
+            SecretPasskey.user_id == consumed.user_id,
+            SecretPasskey.rp_id == rp_id,
+            SecretPasskey.credential_id == credential_id,
+        )
+        .with_for_update()
+    )
+    user = session.get(User, consumed.user_id)
+    if stored is None or user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Passkey non validée.")
+    try:
+        verified = verify_authentication_response(
+            credential=credential,
+            expected_challenge=consumed.challenge,
+            expected_rp_id=rp_id,
+            expected_origin=origin,
+            credential_public_key=stored.public_key,
+            credential_current_sign_count=stored.sign_count,
+            require_user_verification=True,
+        )
+    except Exception as error:
+        raise HTTPException(status_code=401, detail="Passkey non validée.") from error
+    if verified.credential_id != stored.credential_id:
+        raise HTTPException(status_code=401, detail="Passkey non validée.")
+    stored.sign_count = verified.new_sign_count
+    stored.last_used_at = datetime.now(UTC)
     tokens = issue_session(session, user, payload)
     session.commit()
     return tokens

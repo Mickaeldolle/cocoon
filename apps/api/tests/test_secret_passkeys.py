@@ -310,6 +310,138 @@ def test_web_passkey_registration_and_unlock(client: TestClient, monkeypatch) ->
         get_settings.cache_clear()
 
 
+def test_registered_passkey_can_open_an_account_session(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setenv("WEBAUTHN_ORIGIN", ORIGIN)
+    get_settings.cache_clear()
+    try:
+        account = register(
+            client,
+            email="login-passkey@example.com",
+            name="Lina",
+            password=PASSWORD,
+            installation_id="install-login-passkey-47d6676d",
+        )
+        headers = {"Authorization": f"Bearer {account['access_token']}"}
+        unregistered = client.post(
+            "/api/auth/passkeys/login/options", json={"email": "login-passkey@example.com"}
+        )
+        assert unregistered.status_code == 200
+        assert (
+            client.post(
+                "/api/auth/passkeys/login/verify",
+                json={
+                    "challenge_id": unregistered.json()["challenge_id"],
+                    "credential": {},
+                    "installation_id": "install-login-passkey-second-123",
+                    "name": "Navigateur de test",
+                    "platform": "web",
+                },
+            ).status_code
+            == 401
+        )
+        registration = client.post(
+            "/api/secret/passkeys/register/options", json={"password": PASSWORD}, headers=headers
+        ).json()
+        credential, private_key = registration_response(registration["options"]["challenge"])
+        registered = client.post(
+            "/api/secret/passkeys/register/verify",
+            json={"challenge_id": registration["challenge_id"], "credential": credential},
+            headers=headers,
+        )
+        assert registered.status_code == 200, registered.text
+
+        options = client.post(
+            "/api/auth/passkeys/login/options", json={"email": "login-passkey@example.com"}
+        )
+        assert options.status_code == 200, options.text
+        ceremony = options.json()
+        assert ceremony["options"]["userVerification"] == "required"
+        payload = {
+            "challenge_id": ceremony["challenge_id"],
+            "credential": assertion_response(ceremony["options"]["challenge"], private_key),
+            "installation_id": "install-login-passkey-second-123",
+            "name": "Navigateur de test",
+            "platform": "web",
+        }
+        logged_in = client.post("/api/auth/passkeys/login/verify", json=payload)
+        assert logged_in.status_code == 200, logged_in.text
+        assert (
+            client.get(
+                "/api/auth/me",
+                headers={"Authorization": f"Bearer {logged_in.json()['access_token']}"},
+            ).json()["email"]
+            == "login-passkey@example.com"
+        )
+        assert client.post("/api/auth/passkeys/login/verify", json=payload).status_code == 401
+
+        wrong_origin = client.post(
+            "/api/auth/passkeys/login/options", json={"email": "login-passkey@example.com"}
+        ).json()
+        assert (
+            client.post(
+                "/api/auth/passkeys/login/verify",
+                json={
+                    **payload,
+                    "challenge_id": wrong_origin["challenge_id"],
+                    "credential": assertion_response(
+                        wrong_origin["options"]["challenge"],
+                        private_key,
+                        origin="https://attacker.example",
+                    ),
+                },
+            ).status_code
+            == 401
+        )
+        no_verification = client.post(
+            "/api/auth/passkeys/login/options", json={"email": "login-passkey@example.com"}
+        ).json()
+        assert (
+            client.post(
+                "/api/auth/passkeys/login/verify",
+                json={
+                    **payload,
+                    "challenge_id": no_verification["challenge_id"],
+                    "credential": assertion_response(
+                        no_verification["options"]["challenge"],
+                        private_key,
+                        user_verified=False,
+                    ),
+                },
+            ).status_code
+            == 401
+        )
+        unknown = client.post(
+            "/api/auth/passkeys/login/options", json={"email": "unknown@example.com"}
+        )
+        assert unknown.status_code == 200
+        assert len(unknown.json()["options"]["allowCredentials"]) == 1
+        assert (
+            client.post(
+                "/api/auth/passkeys/login/verify",
+                json={**payload, "challenge_id": unknown.json()["challenge_id"]},
+            ).status_code
+            == 401
+        )
+        assert (
+            client.request(
+                "DELETE", "/api/secret/passkeys", json={"password": PASSWORD}, headers=headers
+            ).status_code
+            == 204
+        )
+        revoked = client.post(
+            "/api/auth/passkeys/login/options", json={"email": "login-passkey@example.com"}
+        ).json()
+        assert (
+            client.post(
+                "/api/auth/passkeys/login/verify",
+                json={**payload, "challenge_id": revoked["challenge_id"]},
+            ).status_code
+            == 401
+        )
+    finally:
+        get_settings.cache_clear()
+
+
 def test_web_passkeys_require_an_explicit_secure_origin(client: TestClient, monkeypatch) -> None:
     monkeypatch.setenv("WEBAUTHN_ORIGIN", "http://cocoon-sigma-six.vercel.app")
     get_settings.cache_clear()
@@ -331,6 +463,12 @@ def test_web_passkeys_require_an_explicit_secure_origin(client: TestClient, monk
                 "/api/secret/passkeys/register/options",
                 json={"password": PASSWORD},
                 headers=headers,
+            ).status_code
+            == 503
+        )
+        assert (
+            client.post(
+                "/api/auth/passkeys/login/options", json={"email": "sans-https@example.com"}
             ).status_code
             == 503
         )

@@ -154,3 +154,19 @@ class SecretPasskeyChallenge(Base):
     rp_id: Mapped[str] = mapped_column(String(253))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PasskeyLoginChallenge(Base):
+    """Single-use WebAuthn challenge for a login without an existing session."""
+
+    __tablename__ = "passkey_login_challenges"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    challenge: Mapped[bytes] = mapped_column(LargeBinary)
+    origin: Mapped[str] = mapped_column(String(300))
+    rp_id: Mapped[str] = mapped_column(String(253))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

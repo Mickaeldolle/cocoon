@@ -22,7 +22,12 @@ export async function getDevice(): Promise<DeviceInput> {
 
   return {
     installation_id: installationId,
-    name: Platform.OS === 'ios' ? 'Appareil iOS' : 'Appareil Android',
-    platform: Platform.OS === 'ios' ? 'ios' : 'android',
+    name:
+      Platform.OS === 'web'
+        ? 'Navigateur web'
+        : Platform.OS === 'ios'
+          ? 'Appareil iOS'
+          : 'Appareil Android',
+    platform: Platform.OS === 'web' ? 'web' : Platform.OS === 'ios' ? 'ios' : 'android',
   };
 }

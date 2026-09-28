@@ -40,12 +40,14 @@ export default function SecretUnlockScreen() {
   const [biometricReady, setBiometricReady] = useState(false);
   const [passkeyAvailable, setPasskeyAvailable] = useState(false);
   const [hasPasskey, setHasPasskey] = useState(false);
+  const [passkeyHint, setPasskeyHint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [biometricHint, setBiometricHint] = useState<string | null>(null);
   const [usePassword, setUsePassword] = useState(!(__DEV__ && Platform.OS !== 'web'));
   const isDevelopmentNativeDevice = __DEV__ && Platform.OS !== 'web';
   const isWeb = Platform.OS === 'web';
+  const passkeySupported = isWeb && webPasskeysSupported();
 
   useEffect(() => {
     if (!isDevelopmentNativeDevice) return;
@@ -72,7 +74,7 @@ export default function SecretUnlockScreen() {
   }, [isDevelopmentNativeDevice]);
 
   useEffect(() => {
-    if (!isWeb || !accessToken || !webPasskeysSupported()) return;
+    if (!passkeySupported || !accessToken) return;
     let active = true;
     void secretApi
       .passkeyStatus(accessToken)
@@ -81,14 +83,18 @@ export default function SecretUnlockScreen() {
         setPasskeyAvailable(status.available);
         setHasPasskey(status.has_passkeys);
         setUsePassword(!status.available || !status.has_passkeys);
+        setPasskeyHint(status.available ? null : 'Les passkeys ne sont pas configurées sur l’API.');
       })
       .catch(() => {
-        if (active) setUsePassword(true);
+        if (active) {
+          setUsePassword(true);
+          setPasskeyHint('Impossible de vérifier la disponibilité des passkeys.');
+        }
       });
     return () => {
       active = false;
     };
-  }, [accessToken, isWeb]);
+  }, [accessToken, passkeySupported]);
 
   async function unlock() {
     if (!accessToken || !password || busy) return;
@@ -201,6 +207,12 @@ export default function SecretUnlockScreen() {
               arrière-plan.
             </Text>
             {biometricHint ? <Text style={styles.developmentHint}>{biometricHint}</Text> : null}
+            {isWeb && !passkeySupported ? (
+              <Text style={styles.developmentHint}>
+                Les passkeys nécessitent un navigateur compatible sur une page HTTPS.
+              </Text>
+            ) : null}
+            {passkeyHint ? <Text style={styles.developmentHint}>{passkeyHint}</Text> : null}
             {notice ? <Text style={styles.developmentHint}>{notice}</Text> : null}
             {usePassword ? (
               <>

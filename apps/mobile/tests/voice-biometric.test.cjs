@@ -197,6 +197,79 @@ test('credentials remain separate per account and existing account reuses its cr
   assert.equal(enrolled.length, 2);
 });
 
+function androidBiometricLogin(overrides = {}) {
+  const stored = new Map();
+  const auth = {
+    hasHardwareAsync: async () => true,
+    isEnrolledAsync: async () => true,
+    getEnrolledLevelAsync: async () => 3,
+    SecurityLevel: { BIOMETRIC_STRONG: 3 },
+    authenticateAsync: async () => ({ success: true }),
+    ...overrides,
+  };
+  const service = load('src/services/android-biometric-login.ts', {
+    'expo-local-authentication': auth,
+    'expo-secure-store': {
+      getItemAsync: async (key) => stored.get(key) ?? null,
+      setItemAsync: async (key, value) => stored.set(key, value),
+      deleteItemAsync: async (key) => stored.delete(key),
+    },
+    'react-native': { Platform: { OS: 'android' } },
+  });
+  return { service, stored };
+}
+
+test('Android session reopen is enabled only after a strong biometric succeeds', async () => {
+  const { service } = androidBiometricLogin();
+  assert.equal(await service.isAndroidBiometricLoginEnabled(), false);
+  await service.enableAndroidBiometricLogin();
+  assert.equal(await service.isAndroidBiometricLoginEnabled(), true);
+  await service.disableAndroidBiometricLogin();
+  assert.equal(await service.isAndroidBiometricLoginEnabled(), false);
+});
+
+test('Android cancellation or weak biometrics cannot enable session reopening', async () => {
+  const cancelled = androidBiometricLogin({
+    authenticateAsync: async () => ({ success: false, error: 'user_cancel' }),
+  });
+  await assert.rejects(cancelled.service.enableAndroidBiometricLogin(), /annulée/);
+  assert.equal(await cancelled.service.isAndroidBiometricLoginEnabled(), false);
+  const weak = androidBiometricLogin({ getEnrolledLevelAsync: async () => 2 });
+  await assert.rejects(weak.service.enableAndroidBiometricLogin(), /biométrie forte/);
+  assert.equal(await weak.service.isAndroidBiometricLoginEnabled(), false);
+});
+
+test('session bootstrap waits for biometric confirmation before refreshing', async () => {
+  let refreshRead = false;
+  let state;
+  const store = load('src/stores/session-store.ts', {
+    zustand: {
+      create: (initialize) => {
+        state = initialize(
+          (change) => Object.assign(state, change),
+          () => state,
+        );
+        return state;
+      },
+    },
+    '@/src/services/android-biometric-login': {
+      isAndroidBiometricLoginEnabled: async () => true,
+      disableAndroidBiometricLogin: async () => undefined,
+    },
+    '@/src/services/api': {
+      loadRefreshToken: async () => {
+        refreshRead = true;
+        return 'refresh-token';
+      },
+      clearRefreshToken: async () => undefined,
+    },
+  }).useSessionStore;
+  await store.restore();
+  assert.equal(refreshRead, false);
+  assert.equal(store.initialized, true);
+  assert.equal(store.accessToken, null);
+});
+
 test('one button: short tap sends; hold only reports unavailable transcription', () => {
   const calls = [];
   const { VoiceCapture } = load('features/assistant/voice-capture.tsx', {

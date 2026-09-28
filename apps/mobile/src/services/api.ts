@@ -38,7 +38,7 @@ export type CurrentUser = {
 export type DeviceInput = {
   installation_id: string;
   name: string;
-  platform: 'ios' | 'android';
+  platform: 'ios' | 'android' | 'web';
 };
 
 export type Device = {
@@ -327,6 +327,7 @@ async function call<T>(path: string, options: RequestInit = {}, timeoutMs = 12_0
       headers: { 'Content-Type': 'application/json', ...options.headers },
     });
   } catch (error) {
+    console.error(error);
     if (controller.signal.aborted) {
       throw new ApiError(
         0,
@@ -361,6 +362,20 @@ export const authApi = {
     call<TokenPair>('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
   login: (payload: DeviceInput & { email: string; password: string }) =>
     call<TokenPair>('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+  passkeyLoginOptions: (email: string) =>
+    call<SecretPasskeyCeremony>('/api/auth/passkeys/login/options', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+  verifyPasskeyLogin: (
+    challengeId: string,
+    credential: Record<string, unknown>,
+    device: DeviceInput,
+  ) =>
+    call<TokenPair>('/api/auth/passkeys/login/verify', {
+      method: 'POST',
+      body: JSON.stringify({ challenge_id: challengeId, credential, ...device }),
+    }),
   refresh: (refreshToken: string) =>
     call<TokenPair>('/api/auth/refresh', {
       method: 'POST',

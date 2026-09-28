@@ -1,5 +1,4 @@
 import { Redirect } from 'expo-router';
-import { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 
 import { darkTheme, lightTheme } from '@/src/theme';
@@ -11,12 +10,6 @@ export default function Index() {
   const colors = (mode === 'light' ? lightTheme : darkTheme).colors;
   const initialized = useSessionStore((state) => state.initialized);
   const user = useSessionStore((state) => state.user);
-  const restore = useSessionStore((state) => state.restore);
-
-  useEffect(() => {
-    void restore();
-  }, [restore]);
-
   if (!initialized) {
     return (
       <View

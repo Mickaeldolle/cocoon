@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 
 import {
+  disableAndroidBiometricLogin,
+  isAndroidBiometricLoginEnabled,
+} from '@/src/services/android-biometric-login';
+import {
   authApi,
   clearRefreshToken,
   loadRefreshToken,
@@ -31,6 +35,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   restore: async () => {
     try {
+      if (await isAndroidBiometricLoginEnabled()) {
+        // Wait for an explicit Android biometric prompt on the sign-in screen.
+        set({ initialized: true });
+        return;
+      }
+    } catch {
+      // Do not restore a session if the local lock preference cannot be read.
+      set({ initialized: true });
+      return;
+    }
+    try {
       const refreshToken = await loadRefreshToken();
       if (!refreshToken) {
         set({ initialized: true });
@@ -49,6 +64,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       if (accessToken) await authApi.logout(accessToken);
     } finally {
+      await disableAndroidBiometricLogin();
       await clearRefreshToken();
       set({ accessToken: null, user: null, initialized: true });
     }

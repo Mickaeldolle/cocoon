@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { router } from 'expo-router';
+import { Redirect, router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -29,6 +29,7 @@ import { darkTheme, lightTheme, type ColorTokens } from '@/src/theme';
 const labels = { now: 'Maintenant', review: 'À vérifier', confirm: 'À confirmer' } as const;
 
 export default function HomeScreen() {
+  const initialized = useSessionStore((state) => state.initialized);
   const token = useSessionStore((state) => state.accessToken);
   const user = useSessionStore((state) => state.user);
   const secretToken = useSecretAccessStore((state) => state.token);
@@ -191,7 +192,7 @@ export default function HomeScreen() {
   }, [client, token, user?.id]);
   const home = useQuery({
     queryKey: ['neural-home', user?.id],
-    enabled: Boolean(token),
+    enabled: Boolean(token && user?.id),
     queryFn: () => neuralApi.home(token!),
     retry: false,
   });
@@ -212,6 +213,7 @@ export default function HomeScreen() {
     },
     onError: () => setNotice('Cette proposition ne peut pas être écartée pour le moment.'),
   });
+  if (initialized && (!token || !user)) return <Redirect href="/sign-in" />;
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.gestureArea} {...secretGestureHandlers}>
@@ -290,8 +292,24 @@ export default function HomeScreen() {
             </Text>
           ) : null}
           <Text style={styles.section}>Ce qui mérite votre attention</Text>
-          {home.isPending ? (
+          {home.isPending && !home.isError ? (
             <ActivityIndicator color={colors.spruce} style={styles.loader} />
+          ) : null}
+          {home.isError ? (
+            <View style={styles.empty}>
+              <Text accessibilityRole="alert" style={styles.emptyTitle}>
+                Impossible de charger vos informations.
+              </Text>
+              <Text style={styles.emptyText}>Vérifiez la connexion puis réessayez.</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Réessayer le chargement de l’accueil"
+                onPress={() => void home.refetch()}
+                style={styles.dismiss}
+              >
+                <Text style={styles.dismissText}>Réessayer</Text>
+              </Pressable>
+            </View>
           ) : null}
           {!home.isPending && home.data?.signals.length === 0 ? (
             <View style={styles.empty}>

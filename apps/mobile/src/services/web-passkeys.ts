@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 
-import { secretApi, type SecretAccess } from '@/src/services/api';
+import { authApi, secretApi, type SecretAccess, type TokenPair } from '@/src/services/api';
+import { getDevice } from '@/src/services/device';
 
 type CredentialDescriptorJSON = {
   id: string;
@@ -120,4 +121,37 @@ export async function unlockWithWebPasskey(accessToken: string): Promise<SecretA
     },
     clientExtensionResults: credential.getClientExtensionResults(),
   });
+}
+
+export async function loginWithWebPasskey(email: string): Promise<TokenPair> {
+  requireWebAuthn();
+  const ceremony = await authApi.passkeyLoginOptions(email);
+  const options = ceremony.options as RequestOptionsJSON;
+  const publicKey: PublicKeyCredentialRequestOptions = {
+    ...options,
+    challenge: fromBase64url(options.challenge),
+    allowCredentials: options.allowCredentials?.map((item) => ({
+      ...item,
+      id: fromBase64url(item.id),
+    })),
+  };
+  const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null;
+  if (!credential) throw new Error('Vérification par passkey annulée.');
+  const response = credential.response as AuthenticatorAssertionResponse;
+  return authApi.verifyPasskeyLogin(
+    ceremony.challenge_id,
+    {
+      id: credential.id,
+      rawId: toBase64url(credential.rawId),
+      type: credential.type,
+      response: {
+        authenticatorData: toBase64url(response.authenticatorData),
+        clientDataJSON: toBase64url(response.clientDataJSON),
+        signature: toBase64url(response.signature),
+        userHandle: response.userHandle ? toBase64url(response.userHandle) : null,
+      },
+      clientExtensionResults: credential.getClientExtensionResults(),
+    },
+    await getDevice(),
+  );
 }
