@@ -29,6 +29,9 @@
     "experiments": {
       "typedRoutes": true
     },
+    "web": {
+      "favicon": "./public/icons/favicon.png"
+    },
     "ios": {
       "bundleIdentifier": "com.example.cocoon"
     },

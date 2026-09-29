@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#181A1F" />
+    <title>Cocoon — connexion indisponible</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background: #181a1f;
+        color: #f4f5f7;
+      }
+      main {
+        max-width: 28rem;
+        padding: 2rem;
+        text-align: center;
+      }
+      img {
+        width: 5rem;
+        height: 5rem;
+      }
+      h1 {
+        font-size: 1.5rem;
+        margin: 1.5rem 0 0.75rem;
+      }
+      p {
+        color: #b1b4be;
+        line-height: 1.5;
+      }
+      button {
+        margin-top: 1rem;
+        border: 0;
+        border-radius: 0.75rem;
+        padding: 0.8rem 1.25rem;
+        background: #6e7deb;
+        color: #fff;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:focus-visible {
+        outline: 3px solid #c8ceff;
+        outline-offset: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/icons/icon-192.png" alt="" />
+      <h1>Connexion indisponible</h1>
+      <p>
+        Cocoon a besoin d’une connexion pour accéder à vos conversations. Reconnectez-vous, puis
+        réessayez.
+      </p>
+      <button type="button" onclick="location.reload()">Réessayer</button>
+    </main>
+  </body>
+</html>
