@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -46,13 +46,13 @@ export default function SecretConversationsScreen() {
     if (!accessToken || !secretToken) router.replace('/home');
   }, [accessToken, secretToken]);
 
-  async function lock() {
+  const lock = useCallback(async () => {
     if (accessToken && secretToken)
       await secretApi.lock(accessToken, secretToken).catch(() => undefined);
     clearSecretAccess();
     client.removeQueries({ queryKey: ['secret'] });
     router.replace('/home');
-  }
+  }, [accessToken, secretToken, clearSecretAccess, client]);
 
   async function createConversation() {
     if (!invitee.trim() || !accessToken || !secretToken) {
@@ -76,8 +76,14 @@ export default function SecretConversationsScreen() {
   }
 
   useEffect(() => {
-    if (conversations.error instanceof ApiError && conversations.error.status === 401) void lock();
-  }, [conversations.error]);
+    if (
+      accessToken &&
+      secretToken &&
+      conversations.error instanceof ApiError &&
+      conversations.error.status === 401
+    )
+      void lock();
+  }, [accessToken, secretToken, conversations.error, lock]);
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -103,7 +109,12 @@ export default function SecretConversationsScreen() {
         </View>
       </View>
       <ScrollView contentContainerStyle={styles.content}>
-        <Modal animationType="slide" transparent visible={open} onRequestClose={() => setOpen(false)}>
+        <Modal
+          animationType="slide"
+          transparent
+          visible={open}
+          onRequestClose={() => setOpen(false)}
+        >
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={styles.modalBackdrop}
@@ -145,7 +156,11 @@ export default function SecretConversationsScreen() {
               />
               <Text style={styles.helper}>Sans nom, le nom de l’invité sera utilisé.</Text>
               {error ? <Text style={styles.formError}>{error}</Text> : null}
-              <Pressable accessibilityRole="button" onPress={() => void createConversation()} style={styles.primary}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => void createConversation()}
+                style={styles.primary}
+              >
                 <Text style={styles.primaryText}>Créer la discussion</Text>
               </Pressable>
             </View>
@@ -163,10 +178,7 @@ export default function SecretConversationsScreen() {
           <Text style={styles.empty}>Aucune discussion à afficher.</Text>
         ) : null}
         {conversations.data?.map((conversation) => (
-          <View
-            key={conversation.id}
-            style={styles.row}
-          >
+          <View key={conversation.id} style={styles.row}>
             <Pressable
               accessibilityRole="button"
               disabled={conversation.membership_status === 'pending'}
@@ -186,7 +198,9 @@ export default function SecretConversationsScreen() {
                   <Text style={styles.pending}>Invitation en attente</Text>
                 ) : null}
               </View>
-              {conversation.membership_status === 'pending' ? null : <Text style={styles.arrow}>›</Text>}
+              {conversation.membership_status === 'pending' ? null : (
+                <Text style={styles.arrow}>›</Text>
+              )}
             </Pressable>
             {conversation.membership_status === 'pending' ? (
               <View style={styles.actions}>

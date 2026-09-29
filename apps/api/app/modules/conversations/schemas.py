@@ -24,10 +24,12 @@ class ConversationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     membership_status: str = "accepted"
+    recipient_name: str | None = None
 
 
 class MessageCreate(BaseModel):
     body: str = Field(min_length=1, max_length=10000)
+    client_message_id: UUID | None = None
 
 
 class MessageResponse(BaseModel):

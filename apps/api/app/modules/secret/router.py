@@ -4,6 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pydantic import BaseModel
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -59,15 +60,25 @@ from app.modules.conversations.models import (
     ConversationRole,
     Message,
 )
-from app.modules.conversations.router import conversation_response, message_response
+from app.modules.conversations.router import (
+    conversation_recipient_name,
+    conversation_response,
+    message_response,
+    same_client_message,
+)
 from app.modules.conversations.schemas import (
     ConversationCreate,
     ConversationResponse,
     MessageCreate,
     MessageResponse,
 )
+from app.modules.secret.typing import secret_typing
 
 router = APIRouter(prefix="/api/secret", tags=["secret"])
+
+
+class SecretTypingRequest(BaseModel):
+    is_typing: bool
 
 
 def require_development_biometric_unlock() -> None:
@@ -94,6 +105,7 @@ def mint_secret_access(
         .values(revoked_at=now)
     )
     token = create_refresh_token()
+    secret_typing.clear_user(authenticated.user.id)
     session.add(
         SecretAccessSession(
             user_id=authenticated.user.id,
@@ -494,6 +506,7 @@ def lock_secret_access(
     authenticated: AuthenticatedSecretSession = Depends(get_authenticated_secret_session),
     session: Session = Depends(get_session),
 ) -> Response:
+    secret_typing.clear_user(authenticated.authenticated.user.id)
     authenticated.secret_session.revoked_at = datetime.now(UTC)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -631,14 +644,19 @@ def get_secret_conversation(
     conversation_id: UUID,
     authenticated: AuthenticatedSecretSession = Depends(get_authenticated_secret_session),
     session: Session = Depends(get_session),
-) -> Conversation:
-    secret_membership_or_not_found(session, conversation_id, authenticated.authenticated.user.id)
+) -> ConversationResponse:
+    user_id = authenticated.authenticated.user.id
+    membership = secret_membership_or_not_found(session, conversation_id, user_id)
     conversation = session.get(Conversation, conversation_id)
     if conversation is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Conversation introuvable."
         )
-    return conversation
+    return conversation_response(
+        conversation,
+        membership,
+        conversation_recipient_name(session, conversation_id, user_id, hidden=True),
+    )
 
 
 @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageResponse])
@@ -654,14 +672,57 @@ def list_secret_messages(
         session.scalars(
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.asc())
+            .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(100)
         )
     )
     membership.last_read_at = datetime.now(UTC)
     session.commit()
-    # Do not expose other members' activity as a side channel from this access surface.
-    return [message_response(message, [membership]) for message in messages]
+    # Read receipts are visible only inside this accepted, unlocked hidden conversation.
+    memberships = list(
+        session.scalars(
+            select(ConversationMember).where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.is_hidden.is_(True),
+                ConversationMember.status == ConversationMemberStatus.ACCEPTED,
+            )
+        )
+    )
+    return [message_response(message, memberships) for message in reversed(messages)]
+
+
+@router.get("/conversations/{conversation_id}/typing")
+def get_secret_typing(
+    conversation_id: UUID,
+    authenticated: AuthenticatedSecretSession = Depends(get_authenticated_secret_session),
+    session: Session = Depends(get_session),
+) -> dict[str, bool]:
+    user_id = authenticated.authenticated.user.id
+    secret_membership_or_not_found(session, conversation_id, user_id)
+    other_user_ids = list(
+        session.scalars(
+            select(ConversationMember.user_id).where(
+                ConversationMember.conversation_id == conversation_id,
+                ConversationMember.is_hidden.is_(True),
+                ConversationMember.status == ConversationMemberStatus.ACCEPTED,
+                ConversationMember.user_id != user_id,
+            )
+        )
+    )
+    return {"is_typing": secret_typing.is_other_typing(conversation_id, other_user_ids)}
+
+
+@router.post("/conversations/{conversation_id}/typing", status_code=status.HTTP_204_NO_CONTENT)
+def set_secret_typing(
+    conversation_id: UUID,
+    payload: SecretTypingRequest,
+    authenticated: AuthenticatedSecretSession = Depends(get_authenticated_secret_session),
+    session: Session = Depends(get_session),
+) -> Response:
+    user_id = authenticated.authenticated.user.id
+    secret_membership_or_not_found(session, conversation_id, user_id)
+    secret_typing.update(conversation_id, user_id, payload.is_typing)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -678,13 +739,36 @@ def send_secret_message(
     membership = secret_membership_or_not_found(
         session, conversation_id, authenticated.authenticated.user.id
     )
+    user_id = authenticated.authenticated.user.id
+    body = payload.body.strip()
+    if payload.client_message_id is not None:
+        existing = session.get(Message, payload.client_message_id)
+        if existing is not None:
+            if not same_client_message(existing, conversation_id, user_id, body):
+                raise HTTPException(status_code=409, detail="Identifiant de message déjà utilisé.")
+            secret_typing.update(conversation_id, user_id, False)
+            return message_response(existing, [membership])
     message = Message(
         conversation_id=conversation_id,
-        sender_id=authenticated.authenticated.user.id,
-        body=payload.body.strip(),
+        sender_id=user_id,
+        body=body,
+        **({"id": payload.client_message_id} if payload.client_message_id else {}),
     )
     session.add(message)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = (
+            session.get(Message, payload.client_message_id) if payload.client_message_id else None
+        )
+        if not same_client_message(existing, conversation_id, user_id, body):
+            raise HTTPException(
+                status_code=409, detail="Identifiant de message déjà utilisé."
+            ) from None
+        secret_typing.update(conversation_id, user_id, False)
+        return message_response(existing, [membership])
     session.refresh(message)
+    secret_typing.update(conversation_id, user_id, False)
     # Secret conversations intentionally have no realtime broadcast or notification in this phase.
     return message_response(message, [membership])

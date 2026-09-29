@@ -10,6 +10,10 @@ if (!apiUrl) {
   throw new Error('EXPO_PUBLIC_API_URL doit être défini pour appeler l’API Cocoon.');
 }
 
+export function realtimeSocketUrl(): string {
+  return `${apiUrl!.replace(/^http/, 'ws')}/api/ws`;
+}
+
 export type TokenPair = {
   access_token: string;
   refresh_token: string;
@@ -78,6 +82,7 @@ export type Conversation = {
   created_at: string;
   updated_at: string;
   membership_status: 'pending' | 'accepted' | 'declined';
+  recipient_name: string | null;
 };
 
 export type Message = {
@@ -457,10 +462,18 @@ export const conversationsApi = {
     ),
   listMessages: (accessToken: string, conversationId: string) =>
     call<Message[]>(`/api/conversations/${conversationId}/messages`, withAccessToken(accessToken)),
-  sendMessage: (accessToken: string, conversationId: string, body: string) =>
+  sendMessage: (
+    accessToken: string,
+    conversationId: string,
+    body: string,
+    clientMessageId?: string,
+  ) =>
     call<Message>(
       `/api/conversations/${conversationId}/messages`,
-      withAccessToken(accessToken, { method: 'POST', body: JSON.stringify({ body }) }),
+      withAccessToken(accessToken, {
+        method: 'POST',
+        body: JSON.stringify({ body, client_message_id: clientMessageId }),
+      }),
     ),
   issueRealtimeTicket: (accessToken: string) =>
     call<{ ticket: string }>(
@@ -587,12 +600,31 @@ export const secretApi = {
     secretAccessToken: string,
     conversationId: string,
     body: string,
+    clientMessageId?: string,
   ) =>
     call<Message>(
       `/api/secret/conversations/${conversationId}/messages`,
       withSecretAccess(accessToken, secretAccessToken, {
         method: 'POST',
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body, client_message_id: clientMessageId }),
+      }),
+    ),
+  getTyping: (accessToken: string, secretAccessToken: string, conversationId: string) =>
+    call<{ is_typing: boolean }>(
+      `/api/secret/conversations/${conversationId}/typing`,
+      withSecretAccess(accessToken, secretAccessToken),
+    ),
+  setTyping: (
+    accessToken: string,
+    secretAccessToken: string,
+    conversationId: string,
+    isTyping: boolean,
+  ) =>
+    call<void>(
+      `/api/secret/conversations/${conversationId}/typing`,
+      withSecretAccess(accessToken, secretAccessToken, {
+        method: 'POST',
+        body: JSON.stringify({ is_typing: isTyping }),
       }),
     ),
 };

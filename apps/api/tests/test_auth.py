@@ -175,8 +175,7 @@ def test_devices_are_account_scoped_and_revocation_invalidates_the_device_sessio
     assert revoked.status_code == 204
     assert client.get("/api/auth/me", headers=second_headers).status_code == 401
     assert (
-        client.delete(f"/api/auth/devices/{other['id']}", headers=first_headers).status_code
-        == 204
+        client.delete(f"/api/auth/devices/{other['id']}", headers=first_headers).status_code == 204
     )
     assert (
         client.delete(f"/api/auth/devices/{current['id']}", headers=first_headers).status_code
@@ -367,6 +366,12 @@ def test_realtime_ticket_authenticates_before_message_delivery(client: TestClien
         json={"member_emails": ["realtime@example.com"]},
         headers=owner_headers,
     ).json()
+    assert (
+        client.post(
+            f"/api/conversations/{conversation['id']}/accept", headers=recipient_headers
+        ).status_code
+        == 200
+    )
     ticket = client.post("/api/realtime/ticket", headers=recipient_headers).json()["ticket"]
 
     with client.websocket_connect("/api/ws") as socket:

@@ -1,4 +1,4 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -123,6 +123,110 @@ def test_secret_access_requires_step_up_and_is_bound_to_its_normal_session(
     )
     assert client.post("/api/secret/lock", headers=secret_headers).status_code == 204
     assert client.get("/api/secret/conversations", headers=secret_headers).status_code == 401
+
+
+def test_secret_typing_and_message_retry_stay_inside_accepted_hidden_membership(
+    client: TestClient,
+) -> None:
+    password = "une-phrase-de-passe-solide"
+    owner = register(
+        client,
+        email="secret-typing-owner@example.com",
+        name="Camille",
+        password=password,
+        installation_id="secret-typing-owner-install",
+    )
+    invitee = register(
+        client,
+        email="secret-typing-invitee@example.com",
+        name="Alex",
+        password=password,
+        installation_id="secret-typing-invitee-install",
+    )
+    owner_basic = {"Authorization": f"Bearer {owner['access_token']}"}
+    invitee_basic = {"Authorization": f"Bearer {invitee['access_token']}"}
+    owner_unlock = client.post(
+        "/api/secret/unlock", json={"password": password}, headers=owner_basic
+    )
+    invitee_unlock = client.post(
+        "/api/secret/unlock", json={"password": password}, headers=invitee_basic
+    )
+    assert owner_unlock.status_code == invitee_unlock.status_code == 200
+    owner_headers = {
+        **owner_basic,
+        "X-Cocoon-Secret-Access": owner_unlock.json()["secret_access_token"],
+    }
+    invitee_headers = {
+        **invitee_basic,
+        "X-Cocoon-Secret-Access": invitee_unlock.json()["secret_access_token"],
+    }
+    created = client.post(
+        "/api/secret/conversations",
+        json={"invitee": "secret-typing-invitee@example.com"},
+        headers=owner_headers,
+    )
+    assert created.status_code == 201
+    conversation_id = created.json()["id"]
+    typing_url = f"/api/secret/conversations/{conversation_id}/typing"
+    messages_url = f"/api/secret/conversations/{conversation_id}/messages"
+
+    assert client.get(typing_url, headers=owner_basic).status_code == 401
+    assert client.get(typing_url, headers=invitee_headers).status_code == 404
+    assert (
+        client.post(typing_url, json={"is_typing": True}, headers=invitee_headers).status_code
+        == 404
+    )
+    assert (
+        client.post(typing_url, json={"is_typing": True}, headers=owner_headers).status_code == 204
+    )
+    assert client.get(typing_url, headers=owner_headers).json() == {"is_typing": False}
+
+    accepted = client.post(
+        f"/api/secret/conversations/{conversation_id}/accept", headers=invitee_headers
+    )
+    assert accepted.status_code == 200
+    assert client.get(typing_url, headers=invitee_headers).json() == {"is_typing": True}
+    assert (
+        client.get(f"/api/secret/conversations/{conversation_id}", headers=owner_headers).json()[
+            "recipient_name"
+        ]
+        == "Alex"
+    )
+    assert (
+        client.get(f"/api/secret/conversations/{conversation_id}", headers=invitee_headers).json()[
+            "recipient_name"
+        ]
+        == "Camille"
+    )
+
+    message_id = str(uuid4())
+    payload = {"body": "Un message caché", "client_message_id": message_id}
+    first = client.post(messages_url, json=payload, headers=owner_headers)
+    repeated = client.post(messages_url, json=payload, headers=owner_headers)
+    assert first.status_code == repeated.status_code == 201
+    assert first.json()["id"] == repeated.json()["id"] == message_id
+    owner_messages = client.get(messages_url, headers=owner_headers).json()
+    assert [item["id"] for item in owner_messages] == [message_id]
+    assert owner_messages[0]["read_by_count"] == 0
+    assert client.get(messages_url, headers=invitee_headers).status_code == 200
+    assert client.get(messages_url, headers=owner_headers).json()[0]["read_by_count"] == 1
+    assert client.get(typing_url, headers=invitee_headers).json() == {"is_typing": False}
+    assert (
+        client.post(
+            messages_url,
+            json={"body": "Texte différent", "client_message_id": message_id},
+            headers=owner_headers,
+        ).status_code
+        == 409
+    )
+
+    assert (
+        client.post(typing_url, json={"is_typing": True}, headers=owner_headers).status_code == 204
+    )
+    assert client.get(typing_url, headers=invitee_headers).json() == {"is_typing": True}
+    assert client.post("/api/secret/lock", headers=owner_headers).status_code == 204
+    assert client.get(typing_url, headers=invitee_headers).json() == {"is_typing": False}
+    assert client.get(typing_url, headers=owner_headers).status_code == 401
 
 
 def test_secret_access_does_not_survive_a_new_application_session(client: TestClient) -> None:

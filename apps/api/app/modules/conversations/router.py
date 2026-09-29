@@ -3,6 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 
 def conversation_response(
-    conversation: Conversation, membership: ConversationMember
+    conversation: Conversation, membership: ConversationMember, recipient_name: str | None = None
 ) -> ConversationResponse:
     return ConversationResponse(
         id=conversation.id,
@@ -36,6 +37,23 @@ def conversation_response(
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         membership_status=membership.status.value,
+        recipient_name=recipient_name,
+    )
+
+
+def conversation_recipient_name(
+    session: Session, conversation_id: UUID, user_id: UUID, *, hidden: bool
+) -> str | None:
+    return session.scalar(
+        select(User.display_name)
+        .join(ConversationMember, ConversationMember.user_id == User.id)
+        .where(
+            ConversationMember.conversation_id == conversation_id,
+            ConversationMember.user_id != user_id,
+            ConversationMember.is_hidden.is_(hidden),
+            ConversationMember.status == ConversationMemberStatus.ACCEPTED,
+        )
+        .limit(1)
     )
 
 
@@ -51,6 +69,17 @@ def message_response(message: Message, memberships: list[ConversationMember]) ->
             and member.last_read_at >= message.created_at
             for member in memberships
         ),
+    )
+
+
+def same_client_message(
+    message: Message | None, conversation_id: UUID, sender_id: UUID, body: str
+) -> bool:
+    return (
+        message is not None
+        and message.conversation_id == conversation_id
+        and message.sender_id == sender_id
+        and message.body == body
     )
 
 
@@ -107,24 +136,30 @@ def create_conversation(
     )
     session.add(conversation)
     session.flush()
-    session.add(ConversationMember(
-        conversation_id=conversation.id,
-        user_id=current_user.id,
-        role=ConversationRole.ADMIN,
-        status=ConversationMemberStatus.ACCEPTED,
-    ))
-    session.add(ConversationMember(
-        conversation_id=conversation.id,
-        user_id=invited_user.id,
-        role=ConversationRole.MEMBER,
-        status=ConversationMemberStatus.PENDING,
-    ))
+    session.add(
+        ConversationMember(
+            conversation_id=conversation.id,
+            user_id=current_user.id,
+            role=ConversationRole.ADMIN,
+            status=ConversationMemberStatus.ACCEPTED,
+        )
+    )
+    session.add(
+        ConversationMember(
+            conversation_id=conversation.id,
+            user_id=invited_user.id,
+            role=ConversationRole.MEMBER,
+            status=ConversationMemberStatus.PENDING,
+        )
+    )
     session.commit()
     session.refresh(conversation)
-    membership = session.scalar(select(ConversationMember).where(
-        ConversationMember.conversation_id == conversation.id,
-        ConversationMember.user_id == current_user.id,
-    ))
+    membership = session.scalar(
+        select(ConversationMember).where(
+            ConversationMember.conversation_id == conversation.id,
+            ConversationMember.user_id == current_user.id,
+        )
+    )
     return conversation_response(conversation, membership)
 
 
@@ -140,7 +175,11 @@ def get_conversation(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Conversation introuvable."
         )
-    return conversation_response(conversation, membership)
+    return conversation_response(
+        conversation,
+        membership,
+        conversation_recipient_name(session, conversation_id, current_user.id, hidden=False),
+    )
 
 
 def update_invitation(
@@ -149,12 +188,14 @@ def update_invitation(
     current_user: User,
     session: Session,
 ) -> ConversationResponse:
-    membership = session.scalar(select(ConversationMember).where(
-        ConversationMember.conversation_id == conversation_id,
-        ConversationMember.user_id == current_user.id,
-        ConversationMember.status == ConversationMemberStatus.PENDING,
-        ConversationMember.is_hidden.is_(False),
-    ))
+    membership = session.scalar(
+        select(ConversationMember).where(
+            ConversationMember.conversation_id == conversation_id,
+            ConversationMember.user_id == current_user.id,
+            ConversationMember.status == ConversationMemberStatus.PENDING,
+            ConversationMember.is_hidden.is_(False),
+        )
+    )
     if membership is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation introuvable.")
     conversation = session.get(Conversation, conversation_id)
@@ -199,7 +240,7 @@ def list_messages(
         session.scalars(
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(Message.created_at.asc())
+            .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(100)
         )
     )
@@ -213,7 +254,7 @@ def list_messages(
             )
         )
     )
-    return [message_response(message, memberships) for message in messages]
+    return [message_response(message, memberships) for message in reversed(messages)]
 
 
 @router.post(
@@ -229,17 +270,39 @@ def send_message(
     session: Session = Depends(get_session),
 ) -> MessageResponse:
     membership = visible_membership_or_not_found(session, conversation_id, current_user.id)
+    body = payload.body.strip()
+    if payload.client_message_id is not None:
+        existing = session.get(Message, payload.client_message_id)
+        if existing is not None:
+            if not same_client_message(existing, conversation_id, current_user.id, body):
+                raise HTTPException(status_code=409, detail="Identifiant de message déjà utilisé.")
+            return message_response(existing, [membership])
     message = Message(
-        conversation_id=conversation_id, sender_id=current_user.id, body=payload.body.strip()
+        conversation_id=conversation_id,
+        sender_id=current_user.id,
+        body=body,
+        **({"id": payload.client_message_id} if payload.client_message_id else {}),
     )
     session.add(message)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = (
+            session.get(Message, payload.client_message_id) if payload.client_message_id else None
+        )
+        if not same_client_message(existing, conversation_id, current_user.id, body):
+            raise HTTPException(
+                status_code=409, detail="Identifiant de message déjà utilisé."
+            ) from None
+        return message_response(existing, [membership])
     session.refresh(message)
     recipients = list(
         session.scalars(
             select(ConversationMember.user_id).where(
                 ConversationMember.conversation_id == conversation_id,
                 ConversationMember.is_hidden.is_(False),
+                ConversationMember.status == ConversationMemberStatus.ACCEPTED,
             )
         )
     )

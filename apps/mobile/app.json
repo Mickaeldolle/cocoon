@@ -3,6 +3,7 @@
     "name": "Cocoon",
     "slug": "cocoon",
     "version": "0.1.0",
+    "icon": "./public/icons/app-icon-1024.png",
     "scheme": "cocoon",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -19,7 +20,7 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Autoriser Cocoon à écouter votre message vocal pour le transcrire.",
+          "microphonePermission": "Autoriser Cocoon à utiliser le micro pour enregistrer des messages vocaux et transcrire vos paroles.",
           "recordAudioAndroid": true,
           "enableBackgroundRecording": false,
           "enableBackgroundPlayback": false
@@ -37,7 +38,24 @@
     },
     "android": {
       "package": "com.example.cocoon",
-      "softwareKeyboardLayoutMode": "resize"
-    }
+      "adaptiveIcon": {
+        "foregroundImage": "./public/icons/android-adaptive-foreground.png",
+        "backgroundColor": "#181A1F"
+      },
+      "softwareKeyboardLayoutMode": "resize",
+      "permissions": [
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "f715e324-4333-4013-ac2a-e66525113223"
+      }
+    },
+    "owner": "mickaeld_dev51"
   }
 }
