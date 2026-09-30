@@ -18,13 +18,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ApiError, secretApi } from '@/src/services/api';
 import { useSecretAccessStore } from '@/src/stores/secret-access-store';
 import { useSessionStore } from '@/src/stores/session-store';
-import { darkTheme, lightTheme, type ColorTokens } from '@/src/theme';
+import { darkTheme, lightTheme, subtleBackground, type ColorTokens } from '@/src/theme';
 import { useThemeStore } from '@/src/stores/theme-store';
 
 const secretConversationsKey = ['secret', 'conversations'];
 
 export default function SecretConversationsScreen() {
   const accessToken = useSessionStore((state) => state.accessToken);
+  const isSuperadmin = useSessionStore((state) => state.user?.is_superadmin === true);
   const secretToken = useSecretAccessStore((state) => state.token);
   const clearSecretAccess = useSecretAccessStore((state) => state.clear);
   const client = useQueryClient();
@@ -35,6 +36,7 @@ export default function SecretConversationsScreen() {
   const [name, setName] = useState('');
   const [invitee, setInvitee] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [pendingInvitationId, setPendingInvitationId] = useState<string | null>(null);
   const conversations = useQuery({
     queryKey: secretConversationsKey,
     enabled: Boolean(accessToken && secretToken),
@@ -55,6 +57,10 @@ export default function SecretConversationsScreen() {
   }, [accessToken, secretToken, clearSecretAccess, client]);
 
   async function createConversation() {
+    if (!isSuperadmin) {
+      setError('Seul le superutilisateur peut créer une discussion.');
+      return;
+    }
     if (!invitee.trim() || !accessToken || !secretToken) {
       setError('Ajoutez le pseudo ou l’adresse email d’un proche.');
       return;
@@ -98,14 +104,16 @@ export default function SecretConversationsScreen() {
           >
             <Text style={styles.lockText}>Verrouiller</Text>
           </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Créer une discussion secrète"
-            onPress={() => setOpen(true)}
-            style={styles.add}
-          >
-            <Text style={styles.addText}>add</Text>
-          </Pressable>
+          {isSuperadmin ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Créer une discussion secrète"
+              onPress={() => setOpen(true)}
+              style={styles.add}
+            >
+              <Text style={styles.addText}>add</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
       <ScrollView contentContainerStyle={styles.content}>
@@ -174,6 +182,11 @@ export default function SecretConversationsScreen() {
             L’accès n’est plus disponible. Réessayez après vérification.
           </Text>
         ) : null}
+        {error && !open ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {error}
+          </Text>
+        ) : null}
         {conversations.data?.length === 0 ? (
           <Text style={styles.empty}>Aucune discussion à afficher.</Text>
         ) : null}
@@ -206,25 +219,55 @@ export default function SecretConversationsScreen() {
               <View style={styles.actions}>
                 <Pressable
                   accessibilityRole="button"
+                  disabled={pendingInvitationId !== null}
                   onPress={() => {
-                    if (accessToken && secretToken)
+                    if (accessToken && secretToken) {
+                      setError(null);
+                      setPendingInvitationId(conversation.id);
                       void secretApi
                         .acceptInvitation(accessToken, secretToken, conversation.id)
-                        .then(() => client.invalidateQueries({ queryKey: secretConversationsKey }));
+                        .then(async () => {
+                          await client.invalidateQueries({ queryKey: secretConversationsKey });
+                          router.replace({
+                            pathname: '/secret/conversation/[id]',
+                            params: { id: conversation.id },
+                          });
+                        })
+                        .catch((caught) =>
+                          setError(
+                            caught instanceof ApiError
+                              ? caught.message
+                              : 'Invitation impossible à accepter.',
+                          ),
+                        )
+                        .finally(() => setPendingInvitationId(null));
+                    }
                   }}
-                  style={styles.accept}
+                  style={[styles.accept, pendingInvitationId !== null && styles.disabled]}
                 >
                   <Text style={styles.acceptText}>Accepter</Text>
                 </Pressable>
                 <Pressable
                   accessibilityRole="button"
+                  disabled={pendingInvitationId !== null}
                   onPress={() => {
-                    if (accessToken && secretToken)
+                    if (accessToken && secretToken) {
+                      setError(null);
+                      setPendingInvitationId(conversation.id);
                       void secretApi
                         .declineInvitation(accessToken, secretToken, conversation.id)
-                        .then(() => client.invalidateQueries({ queryKey: secretConversationsKey }));
+                        .then(() => client.invalidateQueries({ queryKey: secretConversationsKey }))
+                        .catch((caught) =>
+                          setError(
+                            caught instanceof ApiError
+                              ? caught.message
+                              : 'Invitation impossible à refuser.',
+                          ),
+                        )
+                        .finally(() => setPendingInvitationId(null));
+                    }
                   }}
-                  style={styles.decline}
+                  style={[styles.decline, pendingInvitationId !== null && styles.disabled]}
                 >
                   <Text style={styles.declineText}>Refuser</Text>
                 </Pressable>
@@ -239,7 +282,7 @@ export default function SecretConversationsScreen() {
 
 function makeStyles(colors: ColorTokens) {
   return StyleSheet.create({
-    screen: { backgroundColor: colors.linen, flex: 1 },
+    screen: { ...subtleBackground(colors), flex: 1 },
     topbar: {
       alignItems: 'center',
       borderBottomColor: colors.border,
@@ -309,6 +352,7 @@ function makeStyles(colors: ColorTokens) {
       paddingHorizontal: 16,
     },
     declineText: { color: colors.ink, fontWeight: '700' },
+    disabled: { opacity: 0.5 },
     modalBackdrop: {
       backgroundColor: 'rgba(10, 12, 18, 0.62)',
       flex: 1,

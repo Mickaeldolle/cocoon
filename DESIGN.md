@@ -44,8 +44,15 @@ La conversation doit évoquer un carnet de messages personnel : le contenu reste
 - Bulles alignées selon l'auteur, fond indigo pour l'envoi et fond neutre pour la réception. L'heure reste secondaire, la coche indique l'envoi ; l'avatar du destinataire apparaît à gauche de la bulle seulement après lecture.
 - Message ajouté dès l'action d'envoi. Un échec conserve la bulle et propose « Réessayer ».
 - Saisie basse, à une ligne au départ, qui suit le clavier et respecte la zone sûre.
+- Sur l’accueil, la saisie reprend la capsule claire et le contour discret du compositeur. Dans une discussion cachée, la saisie reste sur une ligne et défile horizontalement pour un texte long.
+- Un dégradé indigo très léger habille le fond de l’accueil et des écrans cachés sans réduire le contraste du contenu.
 - Le signal « écrit un message » reflète une activité récente ; il disparaît automatiquement s'il n'est plus renouvelé. Dans les discussions cachées, il est récupéré par une requête protégée et temporaire.
 - Le compositeur n'affiche qu'une action : micro lorsque le champ est vide, envoi lorsque du texte est saisi. Maintenir le micro lance l'enregistrement, le relâcher le termine. Le brouillon local peut être écouté ou supprimé ; l'interface indique clairement que son envoi n'est pas encore disponible.
+- Après déverrouillage, ouvrir une discussion acceptée directement. Une invitation en attente garde la liste visible ; son acceptation ouvre la discussion. Seul le superutilisateur peut créer une discussion cachée, avec contrôle côté API.
+- Dans l’APK Android, le premier accès caché demande le mot de passe et active la biométrie forte de l’appareil si elle est disponible. Les accès suivants ouvrent directement la vérification biométrique ; une annulation ou indisponibilité laisse le mot de passe utilisable.
+- Dans Expo Go en développement, le geste déclenche aussi directement la biométrie locale lorsque l’API de développement l’autorise ; le mot de passe reste accessible si le simulateur ne dispose pas de biométrie ou si la vérification échoue.
+- Depuis une discussion cachée, le retour du superutilisateur mène à la liste. Pour les autres membres, il reverrouille l’accès et mène à l’accueil.
+- Le compositeur flotte sur un fond transparent avec un espace visible au-dessus du clavier et du bord inférieur.
 
 ## Règles d'usage
 

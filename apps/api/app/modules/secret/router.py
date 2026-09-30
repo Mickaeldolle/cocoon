@@ -36,6 +36,7 @@ from app.modules.auth.dependencies import (
 from app.modules.auth.models import (
     DevelopmentBiometricCredential,
     SecretAccessSession,
+    SecretBiometricCredential,
     SecretPasskey,
     SecretPasskeyChallenge,
     User,
@@ -43,6 +44,7 @@ from app.modules.auth.models import (
 from app.modules.auth.schemas import (
     DevelopmentBiometricCredentialRequest,
     SecretAccessResponse,
+    SecretBiometricEnrollmentRequest,
     SecretPasskeyCredentialRequest,
     SecretPasskeyRegistrationRequest,
     SecretPasskeyStatus,
@@ -438,6 +440,55 @@ def revoke_secret_passkeys(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/biometric/enroll", status_code=status.HTTP_204_NO_CONTENT)
+def enroll_secret_biometric(
+    payload: SecretBiometricEnrollmentRequest,
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> Response:
+    if not verify_password(payload.password, authenticated.user.password_hash):
+        raise HTTPException(status_code=401, detail="Vérification impossible.")
+    credential = session.scalar(
+        select(SecretBiometricCredential).where(
+            SecretBiometricCredential.user_id == authenticated.user.id,
+            SecretBiometricCredential.device_id == authenticated.user_session.device_id,
+        )
+    )
+    credential_hash = hash_refresh_token(payload.credential)
+    if credential is None:
+        session.add(
+            SecretBiometricCredential(
+                user_id=authenticated.user.id,
+                device_id=authenticated.user_session.device_id,
+                credential_hash=credential_hash,
+            )
+        )
+    else:
+        credential.credential_hash = credential_hash
+        credential.revoked_at = None
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/biometric/unlock", response_model=SecretAccessResponse)
+def unlock_with_secret_biometric(
+    payload: DevelopmentBiometricCredentialRequest,
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> SecretAccessResponse:
+    credential = session.scalar(
+        select(SecretBiometricCredential).where(
+            SecretBiometricCredential.user_id == authenticated.user.id,
+            SecretBiometricCredential.device_id == authenticated.user_session.device_id,
+            SecretBiometricCredential.credential_hash == hash_refresh_token(payload.credential),
+            SecretBiometricCredential.revoked_at.is_(None),
+        )
+    )
+    if credential is None:
+        raise HTTPException(status_code=401, detail="Vérification impossible.")
+    return mint_secret_access(authenticated, session)
+
+
 @router.post("/development-biometric/enroll", status_code=status.HTTP_204_NO_CONTENT)
 def enroll_development_biometric(
     payload: DevelopmentBiometricCredentialRequest,
@@ -538,6 +589,8 @@ def create_secret_conversation(
     authenticated: AuthenticatedSecretSession = Depends(get_authenticated_secret_session),
     session: Session = Depends(get_session),
 ) -> ConversationResponse:
+    if not authenticated.authenticated.user.is_superadmin:
+        raise HTTPException(status_code=403, detail="Accès réservé au superutilisateur.")
     identifier = (payload.invitee or payload.member_emails[0]).strip()
     invited_user = session.scalar(
         select(User).where(

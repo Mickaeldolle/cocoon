@@ -81,6 +81,10 @@ class DevelopmentBiometricCredentialRequest(BaseModel):
     credential: str = Field(min_length=32, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
 
 
+class SecretBiometricEnrollmentRequest(DevelopmentBiometricCredentialRequest):
+    password: str = Field(min_length=8, max_length=256)
+
+
 class SecretAccessResponse(BaseModel):
     secret_access_token: str
     expires_at: datetime

@@ -68,12 +68,11 @@ export default function RootLayout() {
   }, []);
   useEffect(() => {
     if (previousUserId.current !== undefined && previousUserId.current !== userId) {
-      queryClient.removeQueries({
-        predicate: (query) => query.queryKey[0] !== 'secret',
-      });
+      clearSecretAccess();
+      queryClient.clear();
     }
     previousUserId.current = userId;
-  }, [queryClient, userId]);
+  }, [clearSecretAccess, queryClient, userId]);
   useEffect(() => {
     const lock = () => {
       if (accessToken && secretToken)

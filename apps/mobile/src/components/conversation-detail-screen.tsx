@@ -34,7 +34,7 @@ import {
 } from '@/src/services/api';
 import { useSecretAccessStore } from '@/src/stores/secret-access-store';
 import { useSessionStore } from '@/src/stores/session-store';
-import { darkTheme, lightTheme, type ColorTokens } from '@/src/theme';
+import { darkTheme, lightTheme, subtleBackground, type ColorTokens } from '@/src/theme';
 import { useThemeStore } from '@/src/stores/theme-store';
 
 function formatTime(value: string): string {
@@ -64,6 +64,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
   const { id } = useLocalSearchParams<{ id: string }>();
   const token = useSessionStore((state) => state.accessToken);
   const secretToken = useSecretAccessStore((state) => state.token);
+  const clearSecretAccess = useSecretAccessStore((state) => state.clear);
   const user = useSessionStore((state) => state.user);
   const userId = user?.id;
   const client = useQueryClient();
@@ -441,10 +442,26 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
         <View style={styles.header}>
           <Pressable
             accessibilityLabel={
-              secret ? 'Retour aux discussions cachées' : 'Retour aux conversations'
+              secret
+                ? user?.is_superadmin
+                  ? 'Retour aux discussions cachées'
+                  : 'Retour à l’accueil'
+                : 'Retour aux conversations'
             }
             accessibilityRole="button"
-            onPress={() => router.back()}
+            onPress={() => {
+              if (!secret) {
+                router.back();
+              } else if (user?.is_superadmin) {
+                router.replace('/secret/conversations');
+              } else {
+                if (token && secretToken)
+                  void secretApi.lock(token, secretToken).catch(() => undefined);
+                clearSecretAccess();
+                client.removeQueries({ queryKey: ['secret'] });
+                router.replace('/home');
+              }
+            }}
             style={styles.back}
           >
             <Text style={styles.backIcon}>arrow_back</Text>
@@ -559,7 +576,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
         <View
           style={[
             styles.composer,
-            { paddingBottom: keyboardVisible ? 4 : Math.max(insets.bottom, 18) },
+            { paddingBottom: keyboardVisible ? 12 : Math.max(insets.bottom, 24) },
           ]}
         >
           {error ? (
@@ -631,7 +648,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
               editable={!recorderState.isRecording}
               value={body}
               onChangeText={updateBody}
-              multiline
+              multiline={!secret}
               blurOnSubmit={false}
               onSubmitEditing={submit}
               returnKeyType="send"
@@ -694,7 +711,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
 }
 function makeStyles(colors: ColorTokens, mode: 'light' | 'dark') {
   return StyleSheet.create({
-    screen: { backgroundColor: colors.linen, flex: 1 },
+    screen: { ...subtleBackground(colors), flex: 1 },
     flex: { flex: 1 },
     header: {
       alignItems: 'center',
@@ -814,10 +831,15 @@ function makeStyles(colors: ColorTokens, mode: 'light' | 'dark') {
     composer: {
       backgroundColor: 'transparent',
       paddingHorizontal: darkTheme.spacing.content,
-      paddingTop: 10,
+      paddingTop: 6,
     },
     composerError: { color: colors.berry, fontSize: 13, marginBottom: 7 },
-    composerRow: { alignItems: 'flex-end', flexDirection: 'row', gap: 8 },
+    composerRow: {
+      alignItems: 'flex-end',
+      backgroundColor: 'transparent',
+      flexDirection: 'row',
+      gap: 8,
+    },
     voicePanel: {
       backgroundColor: colors.white,
       borderColor: colors.border,
