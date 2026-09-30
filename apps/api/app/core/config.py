@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 source_path = Path(__file__).resolve()
@@ -35,8 +35,19 @@ class Settings(BaseSettings):
     # Self-hosted OpenAI-compatible runtimes commonly do not require a key on the private network.
     llm_api_key: str | None = None
     llm_model: str | None = None
-    llm_timeout_seconds: int = Field(default=300, ge=3, le=600)
+    # Legacy read-timeout setting; used when LLM_READ_TIMEOUT is absent.
+    llm_timeout_seconds: int = Field(default=600, ge=3, le=3600)
+    llm_provider: str = Field(default="openai_compatible", pattern=r"^(ollama|openai_compatible)$")
+    llm_base_url: str | None = None
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str | None = None
+    llm_connection_timeout: float = Field(default=20, gt=0)
+    llm_read_timeout: float | None = Field(default=None, ge=0)
+    llm_pool_timeout: float = Field(default=20, gt=0)
+    llm_streaming: bool = True
+    llm_healthcheck_enabled: bool = True
     assistant_max_concurrent_provider_requests: int = Field(default=2, ge=1, le=8)
+    assistant_requests_per_minute: int = Field(default=30, ge=1, le=1000)
     assistant_max_tool_calls: int = Field(default=4, ge=1, le=10)
     assistant_tool_budget_ms: int = Field(default=2000, ge=100, le=10000)
     # The MVP uses one server-side OpenAI-compatible provider, normally Ollama.
@@ -48,7 +59,7 @@ class Settings(BaseSettings):
     stt_model: str | None = None
     stt_timeout_seconds: int = Field(default=90, ge=3, le=300)
     expo_push_endpoint: str = "https://exp.host/--/api/v2/push/send"
-    worker_interval_seconds: int = Field(default=60, ge=15, le=3600)
+    worker_interval_seconds: int = Field(default=60, ge=5, le=3600)
     worker_lease_seconds: int = Field(default=600, ge=30, le=3600)
     metrics_token: str | None = Field(default=None, min_length=32)
 
@@ -72,6 +83,35 @@ class Settings(BaseSettings):
         if isinstance(value, str) and not value.strip():
             return None
         return value
+
+    @model_validator(mode="after")
+    def validate_llm_configuration(self) -> "Settings":
+        from urllib.parse import urlparse
+
+        url = (
+            self.ollama_base_url
+            if self.llm_provider == "ollama"
+            else self.llm_base_url or self.llm_api_url
+        )
+        model = self.ollama_model if self.llm_provider == "ollama" else self.llm_model
+        if self.llm_provider == "ollama" and not model:
+            raise ValueError("OLLAMA_MODEL est requis avec LLM_PROVIDER=ollama")
+        if self.llm_provider == "openai_compatible" and bool(url) != bool(model):
+            raise ValueError(
+                "LLM_BASE_URL (ou LLM_API_URL) et LLM_MODEL doivent être définis ensemble"
+            )
+        if url:
+            parsed = urlparse(url)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+            ):
+                raise ValueError(
+                    "L'URL du fournisseur LLM doit être une URL HTTP(S) sans identifiants"
+                )
+        return self
 
 
 @lru_cache

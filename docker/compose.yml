@@ -1,6 +1,10 @@
 services:
   caddy:
-    image: caddy:2.8-alpine
+    build:
+      context: ..
+      dockerfile: docker/Caddy.Dockerfile
+      args:
+        EXPO_PUBLIC_API_URL: ${EXPO_PUBLIC_API_URL:-http://localhost:8080}
     depends_on:
       api:
         condition: service_healthy
@@ -12,7 +16,6 @@ services:
       - "${COCOON_HTTP_PORT:-8080}:80"
       - "${COCOON_HTTPS_PORT:-8443}:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -27,8 +30,18 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       APP_ENV: production
       LLM_API_URL: ${LLM_API_URL:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai_compatible}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      LLM_CONNECTION_TIMEOUT: ${LLM_CONNECTION_TIMEOUT:-20}
+      LLM_READ_TIMEOUT: ${LLM_READ_TIMEOUT:-600}
+      LLM_POOL_TIMEOUT: ${LLM_POOL_TIMEOUT:-20}
+      LLM_STREAMING: ${LLM_STREAMING:-true}
+      LLM_HEALTHCHECK_ENABLED: ${LLM_HEALTHCHECK_ENABLED:-true}
+      ASSISTANT_REQUESTS_PER_MINUTE: ${ASSISTANT_REQUESTS_PER_MINUTE:-30}
       STT_API_URL: ${STT_API_URL:-}
       STT_API_KEY: ${STT_API_KEY:-}
       STT_MODEL: ${STT_MODEL:-}
@@ -42,6 +55,8 @@ services:
         condition: service_completed_successfully
     expose:
       - "8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
@@ -97,6 +112,7 @@ services:
     command: ["python", "-m", "app.commands.run_reminder_worker"]
     networks:
       - private
+      - egress
 
   capture-worker:
     build:
@@ -107,8 +123,17 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       APP_ENV: production
       LLM_API_URL: ${LLM_API_URL:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai_compatible}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      LLM_CONNECTION_TIMEOUT: ${LLM_CONNECTION_TIMEOUT:-20}
+      LLM_READ_TIMEOUT: ${LLM_READ_TIMEOUT:-600}
+      LLM_POOL_TIMEOUT: ${LLM_POOL_TIMEOUT:-20}
+      LLM_STREAMING: ${LLM_STREAMING:-true}
+      LLM_HEALTHCHECK_ENABLED: ${LLM_HEALTHCHECK_ENABLED:-true}
       WORKER_INTERVAL_SECONDS: ${WORKER_INTERVAL_SECONDS:-5}
     depends_on:
       postgres:
@@ -116,8 +141,11 @@ services:
       migrate:
         condition: service_completed_successfully
     command: ["python", "-m", "app.commands.run_capture_worker"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - private
+      - egress
 
   postgres:
     image: postgres:16-alpine
@@ -150,6 +178,7 @@ services:
 
 networks:
   edge:
+  egress:
   private:
     internal: true
 

@@ -7,8 +7,7 @@ from datetime import date, timedelta
 
 from fastapi import HTTPException, status
 
-from app.core.config import get_settings
-from app.modules.assistant.providers import OpenAICompatibleProvider
+from app.modules.assistant.llm_service import LLMService
 from app.modules.assistant.schemas import (
     AssistantKind,
     AssistantTag,
@@ -165,13 +164,12 @@ def plan_grocery_meals(payload: GroceryMealPlanRequest) -> GroceryMealPlanRespon
 
 
 def llm_is_configured() -> bool:
-    settings = get_settings()
-    return bool(settings.llm_api_url and settings.llm_model)
+    return LLMService().configured
 
 
 def llm_chat(messages: list[dict[str, str]]) -> str | None:
     """Call the configured server-side provider without exposing it to mobile."""
-    result = OpenAICompatibleProvider(get_settings()).chat(messages)
+    result = LLMService().chat(messages)
     return result.content if result else None
 
 
@@ -179,9 +177,7 @@ def llm_stream(
     messages: list[dict[str, str]], *, cancel_event: threading.Event | None = None
 ):
     """Yield provider deltas while keeping the provider behind the API boundary."""
-    return OpenAICompatibleProvider(get_settings()).stream_chat(
-        messages, cancel_event=cancel_event
-    )
+    return LLMService().stream_chat(messages, cancel_event=cancel_event)
 
 
 def optional_llm_chat(messages: list[dict[str, str]]) -> str | None:

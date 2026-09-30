@@ -1,156 +1,210 @@
-from concurrent.futures import ThreadPoolExecutor
-from threading import Event, Lock
-from types import SimpleNamespace
+import json
+from threading import Event
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
-from app.modules.assistant.providers import OpenAICompatibleProvider, _slot_for_limit
+from app.core.config import Settings
+from app.modules.assistant.llm_service import LLMService, ProviderFactory
+from app.modules.assistant.providers import (
+    LLMError,
+    OllamaProvider,
+    OpenAICompatibleProvider,
+    _slot_for_limit,
+    _timeout,
+)
+
+SECRET = "test-secret-that-is-long-enough-for-validation"
 
 
-class StreamingResponse:
-    def __init__(self, lines: list[bytes]) -> None:
-        self.lines = lines
-        self.closed = False
-
-    def __enter__(self) -> "StreamingResponse":
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        self.closed = True
-        return None
-
-    def __iter__(self):
-        return iter(self.lines)
+def settings(**overrides: object) -> Settings:
+    values = {
+        "jwt_secret": SECRET,
+        "llm_provider": "openai_compatible",
+        "llm_base_url": "http://127.0.0.1:1234/v1",
+        "llm_model": "test-model",
+        "llm_api_key": "test-key",
+        **overrides,
+    }
+    return Settings(_env_file=None, **values)
 
 
-def provider() -> OpenAICompatibleProvider:
-    return OpenAICompatibleProvider(
-        SimpleNamespace(
-            llm_api_url="http://127.0.0.1:11434/v1",
-            llm_model="local-model",
-            llm_api_key="test-key",
-            llm_timeout_seconds=3.0,
-            assistant_max_concurrent_provider_requests=2,
+def mock_client(monkeypatch: pytest.MonkeyPatch, provider: object, handler) -> None:
+    monkeypatch.setattr(provider, "_client", lambda: httpx.Client(
+        transport=httpx.MockTransport(handler), timeout=_timeout(provider.settings),
+        headers=provider._headers(),
+    ))
+
+
+def test_factory_chooses_ollama_and_openai_compatible() -> None:
+    assert isinstance(ProviderFactory.create(settings()), OpenAICompatibleProvider)
+    ollama = settings(llm_provider="ollama", ollama_model="qwen3:8b")
+    assert isinstance(ProviderFactory.create(ollama), OllamaProvider)
+    assert LLMService(ollama).configured
+
+
+def test_openai_chat_uses_configured_model_and_secret_only_on_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAICompatibleProvider(settings())
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat/completions"
+        assert request.headers["Authorization"] == "Bearer test-key"
+        assert json.loads(request.content)["model"] == "test-model"
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "Salut"}, "finish_reason": "stop"}]},
         )
-    )
+
+    mock_client(monkeypatch, provider, handle)
+    result = provider.chat([{"role": "user", "content": "Bonjour"}])
+    assert result and result.content == "Salut" and result.finish_reason == "stop"
 
 
-def test_stream_chat_yields_sse_deltas_without_buffering(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
+def test_openai_stream_delivers_deltas_and_closes_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAICompatibleProvider(settings())
+    cancelled = Event()
 
-    def fake_urlopen(request: object, *, timeout: float) -> StreamingResponse:
-        captured["request"] = request
-        captured["timeout"] = timeout
-        return StreamingResponse(
-            [
-                b'data: {"choices":[{"delta":{"content":"Bonjour"}}]}\n',
-                b'data: {"choices":[{"delta":{"content":" Cocoon"}}]}\n',
-                b"data: [DONE]\n",
-            ]
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"Bonjour"}}]}\n\n'
+                 'data: {"choices":[{"delta":{"content":" Cocoon"}}]}\n\n'
+                 "data: [DONE]\n\n",
         )
 
-    monkeypatch.setattr("app.modules.assistant.providers.urlopen", fake_urlopen)
-
-    chunks = provider().stream_chat([{"role": "user", "content": "Salut"}])
-
-    assert next(chunks) == "Bonjour"
-    assert next(chunks) == " Cocoon"
-    with pytest.raises(StopIteration):
-        next(chunks)
-    request = captured["request"]
-    assert request.data is not None
-    assert b'"stream": true' in request.data
-    assert request.headers["Authorization"] == "Bearer test-key"
-    assert captured["timeout"] == 3.0
+    mock_client(monkeypatch, provider, handle)
+    stream = provider.stream_chat([], cancel_event=cancelled)
+    assert next(stream) == "Bonjour"
+    cancelled.set()
+    assert list(stream) == []
 
 
-def test_stream_chat_rejects_malformed_sse(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "app.modules.assistant.providers.urlopen",
-        lambda *_args, **_kwargs: StreamingResponse([b"data: not-json\n"]),
-    )
+def test_ollama_chat_and_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = OllamaProvider(settings(llm_provider="ollama", ollama_model="qwen3:8b"))
 
-    with pytest.raises(HTTPException) as error:
-        list(provider().stream_chat([]))
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/chat"
+        body = json.loads(request.content)
+        assert body["model"] == "qwen3:8b"
+        if body["stream"]:
+            return httpx.Response(
+                200, text='{"message":{"content":"Salut"},"done":false}\n'
+                          '{"message":{"content":" !"},"done":true}\n'
+            )
+        return httpx.Response(
+            200, json={"message": {"content": "Salut !"}, "done": True,
+                       "prompt_eval_count": 4, "eval_count": 2}
+        )
 
+    mock_client(monkeypatch, provider, handle)
+    assert provider.chat([]).usage["completion_tokens"] == 2
+    assert list(provider.stream_chat([])) == ["Salut", " !"]
+
+
+@pytest.mark.parametrize("code,expected", [(429, 429), (500, 503), (502, 503), (401, 503)])
+def test_http_errors_are_sanitized(
+    monkeypatch: pytest.MonkeyPatch, code: int, expected: int
+) -> None:
+    provider = OpenAICompatibleProvider(settings())
+    mock_client(monkeypatch, provider, lambda _request: httpx.Response(code, text="private detail"))
+    with pytest.raises(LLMError) as error:
+        provider.chat([])
+    assert error.value.status_code == expected
+    assert "private detail" not in error.value.public_message
+
+
+def test_invalid_stream_and_response_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = OpenAICompatibleProvider(settings())
+    mock_client(monkeypatch, provider, lambda _request: httpx.Response(200, text="data: invalid\n"))
+    with pytest.raises(LLMError) as error:
+        list(provider.stream_chat([]))
+    assert error.value.status_code == 502
+    with pytest.raises(LLMError) as error:
+        provider.chat([])
     assert error.value.status_code == 502
 
 
-def test_stream_chat_stops_and_closes_provider_response_when_cancelled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from threading import Event
+def test_timeouts(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = OpenAICompatibleProvider(settings(llm_read_timeout=0))
+    assert _timeout(provider.settings).read is None
 
-    response = StreamingResponse(
-        [
-            b'data: {"choices":[{"delta":{"content":"Premier"}}]}\n',
-            b'data: {"choices":[{"delta":{"content":"Second"}}]}\n',
-        ]
-    )
+    def timeout(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("private host")
+
+    mock_client(monkeypatch, provider, timeout)
+    with pytest.raises(LLMError) as error:
+        provider.chat([])
+    assert error.value.status_code == 504
+
+
+def test_health_check_does_not_change_api_readiness(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = OpenAICompatibleProvider(settings())
+    real_client = httpx.Client
     monkeypatch.setattr(
-        "app.modules.assistant.providers.urlopen", lambda *_args, **_kwargs: response
+        httpx, "Client",
+        lambda **kwargs: real_client(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(503)), **kwargs
+        ),
     )
-    cancelled = Event()
-    chunks = provider().stream_chat([], cancel_event=cancelled)
-
-    assert next(chunks) == "Premier"
-    cancelled.set()
-    with pytest.raises(StopIteration):
-        next(chunks)
-    assert response.closed is True
+    assert provider.health_check() is False
+    service = LLMService(settings())
+    service.provider = provider
+    assert service.status()["available"] is False
 
 
-def test_provider_rejects_a_request_when_the_concurrency_budget_is_full() -> None:
-    current = provider()
-    current.settings.assistant_max_concurrent_provider_requests = 1
+def test_health_check_verifies_the_configured_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_client = httpx.Client
+    available = ["test-model"]
+
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": item} for item in available]})
+
+    monkeypatch.setattr(
+        httpx, "Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    provider = OpenAICompatibleProvider(settings())
+    assert provider.health_check() is True
+    available.clear()
+    assert provider.health_check() is False
+
+
+def test_service_translates_provider_errors_for_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = LLMService(settings())
+
+    def timeout(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("internal address")
+
+    mock_client(monkeypatch, service.provider, timeout)
+    with pytest.raises(HTTPException) as error:
+        service.chat([])
+    assert error.value.status_code == 504
+    assert "internal address" not in error.value.detail
+    with pytest.raises(HTTPException) as error:
+        list(service.stream_chat([]))
+    assert error.value.status_code == 504
+
+
+def test_concurrency_budget_is_enforced() -> None:
+    provider = OpenAICompatibleProvider(settings(assistant_max_concurrent_provider_requests=1))
     slot = _slot_for_limit(1)
     assert slot.acquire(blocking=False)
     try:
-        with pytest.raises(HTTPException) as error:
-            list(current.stream_chat([]))
+        with pytest.raises(LLMError) as error:
+            list(provider.stream_chat([]))
     finally:
         slot.release()
-
     assert error.value.status_code == 429
 
 
-def test_three_simultaneous_provider_requests_respect_the_concurrency_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    current = provider()
-    entered_two_requests = Event()
-    release_provider = Event()
-    count_lock = Lock()
-    entered = 0
-
-    def fake_urlopen(_request: object, *, timeout: float) -> StreamingResponse:
-        nonlocal entered
-        assert timeout == 3.0
-        with count_lock:
-            entered += 1
-            if entered == 2:
-                entered_two_requests.set()
-        assert release_provider.wait(timeout=2)
-        return StreamingResponse([b'data: {"choices":[{"delta":{"content":"ok"}}]}\n'])
-
-    monkeypatch.setattr("app.modules.assistant.providers.urlopen", fake_urlopen)
-
-    def run_request() -> list[str]:
-        return list(current.stream_chat([{"role": "user", "content": "Salut"}]))
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = [pool.submit(run_request) for _ in range(3)]
-        assert entered_two_requests.wait(timeout=1)
-        release_provider.set()
-        errors = 0
-        results: list[list[str]] = []
-        for future in futures:
-            try:
-                results.append(future.result(timeout=2))
-            except HTTPException as error:
-                errors += 1
-                assert error.status_code == 429
-
-    assert results == [["ok"], ["ok"]]
-    assert errors == 1
+def test_configuration_validation() -> None:
+    with pytest.raises(ValueError, match="OLLAMA_MODEL"):
+        settings(llm_provider="ollama")
+    with pytest.raises(ValueError, match="LLM_BASE_URL"):
+        Settings(_env_file=None, jwt_secret=SECRET, llm_base_url="http://localhost:1234/v1")

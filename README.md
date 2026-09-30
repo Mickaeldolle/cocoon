@@ -13,16 +13,18 @@ n’est pas modifiée. Le suivi détaillé et cochable est dans [`TASKS.md`](TAS
 
 ## Démarrage local sans Docker
 
+Les configurations Ollama, LM Studio et vLLM, ainsi que les modes avec et sans
+Docker, sont détaillés dans [docs/llm.md](docs/llm.md).
+
 Prérequis : Python 3.12, Node.js LTS et une instance PostgreSQL accessible depuis le poste.
 Une instance PostgreSQL lancée dans WSL convient si elle est exposée sur `localhost:5432`.
 
 1. Créez une base et un utilisateur PostgreSQL locaux, par exemple `cocoon`.
 2. Copiez `apps/api/.env.example` vers `apps/api/.env`, puis renseignez votre URL PostgreSQL
    et un `JWT_SECRET` local d’au moins 32 caractères. Ce fichier n’est pas versionné.
-   Pour connecter l’assistant à votre modèle auto-hébergé, renseignez aussi `LLM_API_URL`,
-   `LLM_API_KEY` (facultatif sur un réseau privé) et `LLM_MODEL`. `LLM_API_URL` doit être
-   l’URL interne d’une API compatible OpenAI Chat Completions ; le mobile ne reçoit jamais
-   cette URL ni aucune clé.
+   Pour connecter l’assistant, renseignez `LLM_PROVIDER` et les variables du
+   moteur choisi décrites dans [docs/llm.md](docs/llm.md). Le mobile ne reçoit
+   jamais l’URL du moteur ni sa clé.
 3. Dans `apps/api`, installez les dépendances, appliquez les migrations et démarrez l’API :
 
 ```text
@@ -57,14 +59,15 @@ téléphone.
 ## Démarrage avec Docker (optionnel)
 
 1. Copiez `.env.example` vers `.env`, puis remplacez les valeurs de démonstration, en particulier `POSTGRES_PASSWORD` et `JWT_SECRET`.
-2. Lancez les services : `docker compose -f docker/compose.yml --env-file .env up --build`.
-3. Vérifiez l’API via Caddy sur `http://localhost:8080/health`. Les ports locaux sont
+2. Lancez les services depuis la racine : `docker compose up --build`.
+3. Vérifiez le frontend sur `http://localhost:8080` et l’API via
+   `http://localhost:8080/health`. Les ports locaux sont
    configurables avec `COCOON_HTTP_PORT` et `COCOON_HTTPS_PORT`; utilisez `80` et `443`
    uniquement sur le serveur de production.
 
 Les migrations Alembic sont appliquées automatiquement avant le démarrage de l’API. Elles
 restent idempotentes et peuvent aussi être lancées explicitement avec
-`docker compose -f docker/compose.yml --env-file .env exec api alembic upgrade head`.
+`docker compose exec api alembic upgrade head`.
 
 Pour l’application mobile, installez Node.js LTS, puis depuis `apps/mobile` exécutez `npm install` et `npm exec expo start --dev-client`. Les fonctionnalités natives sensibles seront utilisées avec un development build Expo/EAS, pas Expo Go.
 

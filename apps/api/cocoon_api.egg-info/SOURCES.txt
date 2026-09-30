@@ -18,10 +18,12 @@ app/modules/assistant/context.py
 app/modules/assistant/executor.py
 app/modules/assistant/hermes_gateway.py
 app/modules/assistant/kernel.py
+app/modules/assistant/llm_service.py
 app/modules/assistant/models.py
 app/modules/assistant/proposal_types.py
 app/modules/assistant/proposals.py
 app/modules/assistant/providers.py
+app/modules/assistant/rate_limit.py
 app/modules/assistant/router.py
 app/modules/assistant/schemas.py
 app/modules/assistant/service.py
@@ -34,6 +36,7 @@ app/modules/auth/models.py
 app/modules/auth/router.py
 app/modules/auth/schemas.py
 app/modules/auth/service.py
+app/modules/auth/webauthn_config.py
 app/modules/conversations/__init__.py
 app/modules/conversations/models.py
 app/modules/conversations/router.py
@@ -68,12 +71,14 @@ app/modules/realtime/router.py
 app/modules/realtime/service.py
 app/modules/secret/__init__.py
 app/modules/secret/router.py
+app/modules/secret/typing.py
 cocoon_api.egg-info/PKG-INFO
 cocoon_api.egg-info/SOURCES.txt
 cocoon_api.egg-info/dependency_links.txt
 cocoon_api.egg-info/requires.txt
 cocoon_api.egg-info/top_level.txt
 tests/test_assistant.py
+tests/test_assistant_rate_limit.py
 tests/test_auth.py
 tests/test_config.py
 tests/test_isolation.py
@@ -86,4 +91,5 @@ tests/test_provider.py
 tests/test_reminder_worker.py
 tests/test_scenario_corpus.py
 tests/test_secret_access.py
+tests/test_secret_passkeys.py
 tests/test_tools.py

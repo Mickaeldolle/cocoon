@@ -1,39 +1,61 @@
-"""Server-side language-model providers used by the assistant."""
+"""Private LLM adapters. Provider payloads and credentials stay server-side."""
 
 import json
+import logging
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
-from fastapi import HTTPException, status
+import httpx
 
 from app.core.config import Settings
 
+logger = logging.getLogger("cocoon.llm")
 _provider_slots: dict[int, threading.BoundedSemaphore] = {}
 _provider_slots_lock = threading.Lock()
 
 
+class LLMError(Exception):
+    status_code = 503
+    public_message = "Le service IA est momentanément indisponible. Réessayez."
+
+
+class LLMUnavailableError(LLMError):
+    pass
+
+
+class LLMRateLimitError(LLMError):
+    status_code = 429
+    public_message = "Le service IA est momentanément occupé. Réessayez."
+
+
+class LLMTimeoutError(LLMError):
+    status_code = 504
+    public_message = "Le service IA met trop de temps à répondre. Réessayez."
+
+
+class LLMAuthenticationError(LLMError):
+    public_message = "Le service IA est indisponible. Contactez un administrateur."
+
+
+class LLMInvalidResponseError(LLMError):
+    status_code = 502
+    public_message = "La réponse du service IA est inexploitable. Réessayez."
+
+
 def _slot_for_limit(limit: int) -> threading.BoundedSemaphore:
     with _provider_slots_lock:
-        slot = _provider_slots.get(limit)
-        if slot is None:
-            slot = threading.BoundedSemaphore(limit)
-            _provider_slots[limit] = slot
-        return slot
+        return _provider_slots.setdefault(limit, threading.BoundedSemaphore(limit))
 
 
 @contextmanager
 def _provider_slot(settings: Settings) -> Iterator[None]:
     slot = _slot_for_limit(settings.assistant_max_concurrent_provider_requests)
     if not slot.acquire(blocking=False):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Le service IA est momentanément occupé. Réessayez dans un instant.",
-        )
+        raise LLMRateLimitError
     try:
         yield
     finally:
@@ -42,206 +64,276 @@ def _provider_slot(settings: Settings) -> Iterator[None]:
 
 @dataclass(frozen=True)
 class ProviderResult:
-    """Normalized provider result; no credentials or private prompt is retained."""
-
     content: str
     mode: str
     provider: str
     model: str
     usage: dict[str, object] | None = None
+    finish_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    streaming: bool = True
+    structured_output: bool = False
+    tool_calling: bool = False
 
 
 class LLMProvider(Protocol):
-    """Provider contract used by the assistant domain."""
+    capabilities: ProviderCapabilities
 
-    def chat(self, messages: list[dict[str, str]]) -> ProviderResult | None:
-        ...
+    @property
+    def base_url(self) -> str | None: ...
+
+    @property
+    def model(self) -> str | None: ...
+
+    def chat(self, messages: list[dict[str, str]]) -> ProviderResult | None: ...
 
     def stream_chat(
         self, messages: list[dict[str, str]], *, cancel_event: threading.Event | None = None
-    ) -> Iterator[str]:
-        ...
+    ) -> Iterator[str]: ...
 
-    def generate_structured(
-        self, messages: list[dict[str, str]], schema: dict[str, object]
-    ) -> ProviderResult | None:
-        ...
+    def health_check(self) -> bool: ...
 
 
-class OpenAICompatibleProvider:
-    """Call a private OpenAI-compatible chat-completions endpoint from the API."""
+def _timeout(settings: Settings) -> httpx.Timeout:
+    read_seconds = (
+        settings.llm_read_timeout
+        if settings.llm_read_timeout is not None
+        else settings.llm_timeout_seconds
+    )
+    return httpx.Timeout(
+        connect=settings.llm_connection_timeout,
+        read=None if read_seconds == 0 else read_seconds,
+        write=settings.llm_connection_timeout,
+        pool=settings.llm_pool_timeout,
+    )
+
+
+def _provider_error(error: Exception) -> LLMError:
+    if isinstance(error, httpx.HTTPStatusError):
+        code = error.response.status_code
+        if code == 429:
+            return LLMRateLimitError()
+        if code in (401, 403):
+            return LLMAuthenticationError()
+        return LLMUnavailableError() if code >= 500 else LLMInvalidResponseError()
+    if isinstance(error, httpx.TimeoutException):
+        return LLMTimeoutError()
+    if isinstance(error, httpx.RequestError):
+        return LLMUnavailableError()
+    return LLMInvalidResponseError()
+
+
+class _HTTPProvider:
+    name = ""
+    capabilities = ProviderCapabilities()
+    endpoint = ""
+    health_endpoint = ""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def _request(
-        self,
-        messages: list[dict[str, str]],
-        *,
-        stream: bool = False,
-        response_format: dict[str, object] | None = None,
-    ) -> object | None:
-        if not self.settings.llm_api_url or not self.settings.llm_model:
-            return None
-        payload: dict[str, object] = {
-            "model": self.settings.llm_model,
-            "messages": messages,
-            "temperature": 0.2,
-        }
-        if stream:
-            payload["stream"] = True
-        if response_format:
-            payload["response_format"] = response_format
-        request = Request(
-            self.settings.llm_api_url.rstrip("/") + "/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                **(
-                    {"Authorization": f"Bearer {self.settings.llm_api_key}"}
-                    if self.settings.llm_api_key
-                    else {}
-                ),
-            },
-            method="POST",
+    @property
+    def model(self) -> str | None:
+        raise NotImplementedError
+
+    @property
+    def base_url(self) -> str | None:
+        raise NotImplementedError
+
+    def _headers(self) -> dict[str, str]:
+        return {}
+
+    def _payload(self, messages: list[dict[str, str]], stream: bool) -> dict[str, object]:
+        raise NotImplementedError
+
+    def _parse_result(self, body: object) -> ProviderResult:
+        raise NotImplementedError
+
+    def _parse_delta(self, body: object) -> str | None:
+        raise NotImplementedError
+
+    def _client(self) -> httpx.Client:
+        return httpx.Client(
+            timeout=_timeout(self.settings), headers=self._headers(), trust_env=False
         )
-        try:
-            with _provider_slot(self.settings):
-                with urlopen(  # noqa: S310
-                    request, timeout=self.settings.llm_timeout_seconds
-                ) as response:
-                    return response.read()
-        except (
-            HTTPError,
-            URLError,
-            TimeoutError,
-            KeyError,
-            IndexError,
-            json.JSONDecodeError,
-        ) as error:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Le service IA est momentanément indisponible. Réessayez dans un instant.",
-            ) from error
+
+    def _url(self) -> str:
+        return f"{self.base_url.rstrip('/')}{self.endpoint}"
+
+    def _log(self, started: float, status: str, error_type: str = "") -> None:
+        logger.info(
+            "llm_request provider=%s model=%s latency_ms=%d status=%s error_type=%s",
+            self.name, self.model, round((perf_counter() - started) * 1000), status, error_type,
+        )
 
     def chat(self, messages: list[dict[str, str]]) -> ProviderResult | None:
-        raw = self._request(messages)
-        if raw is None:
+        if not self.base_url or not self.model:
             return None
+        started = perf_counter()
         try:
-            body = json.loads(raw.decode("utf-8"))
-            content = body["choices"][0]["message"]["content"]
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError("empty provider content")
-            return ProviderResult(
-                content=content,
-                mode="llm",
-                provider="openai-compatible",
-                model=self.settings.llm_model,
-                usage=body.get("usage") if isinstance(body.get("usage"), dict) else None,
-            )
-        except (
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            KeyError,
-            IndexError,
-            TypeError,
-            ValueError,
-        ) as error:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="La réponse du service IA est inexploitable. Réessayez.",
-            ) from error
+            with _provider_slot(self.settings), self._client() as client:
+                response = client.post(self._url(), json=self._payload(messages, False))
+                response.raise_for_status()
+                result = self._parse_result(response.json())
+            self._log(started, "success")
+            return result
+        except LLMError as error:
+            self._log(started, "error", type(error).__name__)
+            raise
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as error:
+            self._log(started, "error", type(error).__name__)
+            raise _provider_error(error) from error
 
     def stream_chat(
         self, messages: list[dict[str, str]], *, cancel_event: threading.Event | None = None
     ) -> Iterator[str]:
-        if not self.settings.llm_api_url or not self.settings.llm_model:
+        if not self.base_url or not self.model:
             return
-        payload = {
-            "model": self.settings.llm_model,
-            "messages": messages,
-            "temperature": 0.2,
-            "stream": True,
-        }
-        request = Request(
-            self.settings.llm_api_url.rstrip("/") + "/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                **(
-                    {"Authorization": f"Bearer {self.settings.llm_api_key}"}
-                    if self.settings.llm_api_key
-                    else {}
-                ),
-            },
-            method="POST",
-        )
+        started = perf_counter()
         try:
-            with _provider_slot(self.settings):
-                with urlopen(  # noqa: S310
-                    request, timeout=self.settings.llm_timeout_seconds
+            with _provider_slot(self.settings), self._client() as client:
+                with client.stream(
+                    "POST", self._url(), json=self._payload(messages, True)
                 ) as response:
-                    for raw_line in response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
                         if cancel_event is not None and cancel_event.is_set():
+                            self._log(started, "cancelled")
                             return
-                        try:
-                            line = raw_line.decode("utf-8").strip()
+                        if not line or line == "data: [DONE]":
+                            continue
+                        if line.startswith("data:"):
                             line = line.removeprefix("data:").strip()
-                            if not line or line == "[DONE]":
-                                continue
-                            content = json.loads(line)["choices"][0].get("delta", {}).get("content")
-                        except (
-                            UnicodeDecodeError,
-                            json.JSONDecodeError,
-                            KeyError,
-                            IndexError,
-                            TypeError,
-                        ) as error:
-                            raise HTTPException(
-                                status_code=status.HTTP_502_BAD_GATEWAY,
-                                detail="Le flux du service IA est inexploitable. Réessayez.",
-                            ) from error
-                        if isinstance(content, str) and content:
-                            yield content
-        except (HTTPError, URLError, TimeoutError) as error:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Le service IA est momentanément indisponible. Réessayez dans un instant.",
-            ) from error
+                        elif self.name == "openai_compatible":
+                            continue
+                        chunk = self._parse_delta(json.loads(line))
+                        if chunk:
+                            yield chunk
+            self._log(started, "success")
+        except LLMError as error:
+            self._log(started, "error", type(error).__name__)
+            raise
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError) as error:
+            self._log(started, "error", type(error).__name__)
+            raise _provider_error(error) from error
 
-    def generate_structured(
-        self, messages: list[dict[str, str]], schema: dict[str, object]
-    ) -> ProviderResult | None:
-        return self._result_from_request(messages, {"type": "json_schema", "json_schema": schema})
-
-    def _result_from_request(
-        self, messages: list[dict[str, str]], response_format: dict[str, object]
-    ) -> ProviderResult | None:
-        raw = self._request(messages, response_format=response_format)
-        if raw is None:
-            return None
+    def health_check(self) -> bool:
+        if not self.base_url or not self.model:
+            return False
         try:
-            body = json.loads(raw.decode("utf-8"))
-            content = body["choices"][0]["message"]["content"]
-            if not isinstance(content, str) or not content.strip():
-                raise ValueError("empty provider content")
-            return ProviderResult(
-                content=content,
-                mode="llm",
-                provider="openai-compatible",
-                model=self.settings.llm_model,
-                usage=body.get("usage") if isinstance(body.get("usage"), dict) else None,
-            )
-        except (
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            KeyError,
-            IndexError,
-            TypeError,
-            ValueError,
-        ) as error:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="La réponse structurée du service IA est inexploitable. Réessayez.",
-            ) from error
+            with httpx.Client(
+                timeout=httpx.Timeout(5), headers=self._headers(), trust_env=False
+            ) as client:
+                response = client.get(f"{self.base_url.rstrip('/')}{self.health_endpoint}")
+                response.raise_for_status()
+                body = response.json()
+                return self._model_available(body)
+        except (httpx.HTTPError, ValueError):
+            return False
+
+    def _model_available(self, body: object) -> bool:
+        return isinstance(body, dict)
+
+
+class OpenAICompatibleProvider(_HTTPProvider):
+    name = "openai_compatible"
+    endpoint = "/chat/completions"
+    health_endpoint = "/models"
+
+    @property
+    def model(self) -> str | None:
+        return self.settings.llm_model
+
+    @property
+    def base_url(self) -> str | None:
+        return self.settings.llm_base_url or self.settings.llm_api_url
+
+    def _headers(self) -> dict[str, str]:
+        return (
+            {"Authorization": f"Bearer {self.settings.llm_api_key}"}
+            if self.settings.llm_api_key else {}
+        )
+
+    def _payload(self, messages: list[dict[str, str]], stream: bool) -> dict[str, object]:
+        return {"model": self.model, "messages": messages, "temperature": 0.2, "stream": stream}
+
+    def _parse_result(self, body: object) -> ProviderResult:
+        if not isinstance(body, dict):
+            raise ValueError("invalid response")
+        choice = body["choices"][0]
+        content = choice["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("empty response")
+        return ProviderResult(
+            content, "llm", self.name, self.model or "",
+            body.get("usage") if isinstance(body.get("usage"), dict) else None,
+            choice.get("finish_reason"),
+        )
+
+    def _parse_delta(self, body: object) -> str | None:
+        content = body["choices"][0].get("delta", {}).get("content")
+        if content is not None and not isinstance(content, str):
+            raise ValueError("invalid delta")
+        return content
+
+    def _model_available(self, body: object) -> bool:
+        if not isinstance(body, dict):
+            return False
+        models = body.get("data")
+        return (
+            isinstance(models, list)
+            and any(isinstance(item, dict) and item.get("id") == self.model for item in models)
+        )
+
+
+class OllamaProvider(_HTTPProvider):
+    name = "ollama"
+    endpoint = "/api/chat"
+    health_endpoint = "/api/tags"
+
+    @property
+    def model(self) -> str | None:
+        return self.settings.ollama_model
+
+    @property
+    def base_url(self) -> str | None:
+        return self.settings.ollama_base_url
+
+    def _payload(self, messages: list[dict[str, str]], stream: bool) -> dict[str, object]:
+        return {
+            "model": self.model, "messages": messages, "stream": stream,
+            "options": {"temperature": 0.2},
+        }
+
+    def _parse_result(self, body: object) -> ProviderResult:
+        if not isinstance(body, dict):
+            raise ValueError("invalid response")
+        content = body["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("empty response")
+        usage = {
+            "prompt_tokens": body.get("prompt_eval_count"),
+            "completion_tokens": body.get("eval_count"),
+        }
+        return ProviderResult(
+            content, "llm", self.name, self.model or "", usage,
+            "stop" if body.get("done") else None,
+        )
+
+    def _parse_delta(self, body: object) -> str | None:
+        content = body["message"]["content"]
+        if not isinstance(content, str):
+            raise ValueError("invalid delta")
+        return content
+
+    def _model_available(self, body: object) -> bool:
+        if not isinstance(body, dict):
+            return False
+        models = body.get("models")
+        return (
+            isinstance(models, list)
+            and any(isinstance(item, dict) and item.get("name") == self.model for item in models)
+        )

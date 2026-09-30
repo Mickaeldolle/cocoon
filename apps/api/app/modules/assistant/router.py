@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.database import get_session
 from app.modules.assistant.context import (
     accessible_memory_summaries,
@@ -32,6 +33,7 @@ from app.modules.assistant.kernel import (
     stream_answer,
     streamed_reply_prefix,
 )
+from app.modules.assistant.llm_service import LLMService
 from app.modules.assistant.models import (
     AssistantMessage,
     AssistantMessageRole,
@@ -50,6 +52,7 @@ from app.modules.assistant.proposals import (
     record_proposal_execution,
     stable_proposal_key,
 )
+from app.modules.assistant.rate_limit import assistant_rate_limiter
 from app.modules.assistant.schemas import (
     AssistantBriefingResponse,
     AssistantChatResponse,
@@ -87,6 +90,26 @@ from app.modules.memory.context import accessible_memory_summary_keys
 from app.modules.personal.models import PersonalTask
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
+
+
+def enforce_generation_rate_limit(
+    current_user: User = Depends(get_current_user),
+) -> None:
+    if not assistant_rate_limiter.allow(
+        current_user.id, get_settings().assistant_requests_per_minute
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Trop de demandes à l’assistant. Réessayez dans une minute.",
+        )
+
+
+@router.get("/status")
+async def assistant_status(
+    _current_user: User = Depends(get_current_user),
+) -> dict[str, str | bool]:
+    """Private model availability; no URL or credentials in the response."""
+    return await run_in_threadpool(LLMService().status)
 
 
 @router.post("/voice/transcriptions", response_model=VoiceTranscriptionResponse)
@@ -259,7 +282,10 @@ def _persist_chat_reply(
     )
 
 
-@router.post("/chat", response_model=AssistantChatResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/chat", response_model=AssistantChatResponse, status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce_generation_rate_limit)],
+)
 async def create_chat_turn(
     payload: AssistantTurnRequest,
     current_user: User = Depends(get_current_user),
@@ -369,7 +395,10 @@ async def create_chat_turn(
     )
 
 
-@router.post("/chat/stream", status_code=status.HTTP_200_OK)
+@router.post(
+    "/chat/stream", status_code=status.HTTP_200_OK,
+    dependencies=[Depends(enforce_generation_rate_limit)],
+)
 async def create_streaming_chat_turn(
     payload: AssistantTurnRequest,
     request: Request,
@@ -499,7 +528,10 @@ async def create_streaming_chat_turn(
     )
 
 
-@router.post("/turn", response_model=AssistantTurnResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/turn", response_model=AssistantTurnResponse, status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(enforce_generation_rate_limit)],
+)
 def create_turn(
     payload: AssistantTurnRequest,
     current_user: User = Depends(get_current_user),
@@ -935,7 +967,10 @@ def update_brief_settings(
     return payload
 
 
-@router.post("/organize", response_model=ThoughtOrganizationResponse)
+@router.post(
+    "/organize", response_model=ThoughtOrganizationResponse,
+    dependencies=[Depends(enforce_generation_rate_limit)],
+)
 def organize(
     payload: ThoughtOrganizationRequest,
     current_user: User = Depends(get_current_user),
@@ -945,7 +980,10 @@ def organize(
     return organize_thought(payload)
 
 
-@router.post("/meal-plan", response_model=GroceryMealPlanResponse)
+@router.post(
+    "/meal-plan", response_model=GroceryMealPlanResponse,
+    dependencies=[Depends(enforce_generation_rate_limit)],
+)
 def create_meal_plan(
     payload: GroceryMealPlanRequest,
     current_user: User = Depends(get_current_user),

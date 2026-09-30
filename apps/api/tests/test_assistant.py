@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.core.config import get_settings
 from app.main import app
 from app.modules.assistant import service as assistant_service
 from app.modules.assistant import voice as assistant_voice
@@ -18,6 +19,7 @@ from app.modules.assistant.models import (
     ProposalExecution,
     RecurringReminder,
 )
+from app.modules.assistant.rate_limit import AssistantRateLimiter
 from app.modules.assistant.router import create_voice_transcription
 from app.modules.neural.models import MemoryItem, MemoryLayer
 from app.modules.personal.models import GroceryItem, PersonalTask, TrainingSession
@@ -68,6 +70,43 @@ def register_payload() -> dict[str, object]:
 def authenticated_headers(client: TestClient) -> dict[str, str]:
     tokens = client.post("/api/auth/register", json=register_payload()).json()
     return {"Authorization": f"Bearer {tokens['access_token']}"}
+
+
+def test_assistant_status_requires_auth_and_hides_provider_url(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.modules.assistant.router.LLMService.status",
+        lambda _self: {"available": False, "provider": "ollama", "model": "qwen3:8b"},
+    )
+    assert client.get("/api/assistant/status").status_code == 401
+    response = client.get("/api/assistant/status", headers=authenticated_headers(client))
+    assert response.status_code == 200
+    assert response.json() == {
+        "available": False, "provider": "ollama", "model": "qwen3:8b",
+    }
+
+
+def test_generation_route_limits_each_user(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.modules.assistant.router.assistant_rate_limiter", AssistantRateLimiter()
+    )
+    monkeypatch.setattr(get_settings(), "assistant_requests_per_minute", 2)
+    headers = authenticated_headers(client)
+    request = {"thought": "Préparer la liste de courses"}
+    assert client.post("/api/assistant/organize", headers=headers, json=request).status_code == 200
+    assert client.post("/api/assistant/organize", headers=headers, json=request).status_code == 200
+    assert client.post("/api/assistant/organize", headers=headers, json=request).status_code == 429
+    other = register_payload()
+    other["email"] = "autre@example.com"
+    token = client.post("/api/auth/register", json=other).json()["access_token"]
+    assert client.post(
+        "/api/assistant/organize",
+        headers={"Authorization": f"Bearer {token}"},
+        json=request,
+    ).status_code == 200
 
 
 def test_assistant_organizes_thought_with_tags_and_reminder_date(client: TestClient) -> None:

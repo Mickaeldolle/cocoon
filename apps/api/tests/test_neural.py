@@ -213,6 +213,12 @@ def test_capture_stream_replays_from_last_event_id_with_idempotency(
 def test_engagement_keeps_explicit_weekday_and_day_when_llm_is_generic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 22, tzinfo=tz)
+
+    monkeypatch.setattr(neural_service, "datetime", FixedDatetime)
     monkeypatch.setattr(
         neural_service,
         "llm_chat",
