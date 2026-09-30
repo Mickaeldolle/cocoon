@@ -48,7 +48,7 @@ export default function RegisterScreen() {
     <SafeAreaView style={styles.screen}>
       <View style={styles.content}>
         <Text style={styles.kicker}>BIENVENUE</Text>
-        <Text style={styles.title}>Créez votre cocon familial.</Text>
+        <Text style={styles.title}>Créez votre assistant personnel.</Text>
         <Text style={styles.description}>
           Utilisez un mot de passe long. Il restera uniquement sur cet appareil via votre
           gestionnaire de mots de passe.

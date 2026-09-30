@@ -56,5 +56,12 @@ export const lightTheme = {
 export type ColorTokens = { [Key in keyof typeof darkTheme.colors]: string };
 export type AppTheme = Omit<typeof darkTheme, 'colors'> & { colors: ColorTokens };
 
+export function subtleBackground(colors: ColorTokens) {
+  return {
+    backgroundColor: colors.linen,
+    experimental_backgroundImage: `linear-gradient(155deg, ${colors.linen} 0%, ${colors.spruceSoft} 48%, ${colors.linen} 100%)`,
+  } as const;
+}
+
 // Legacy default used by screens not yet migrated to the interactive theme switch.
 export const theme = darkTheme;

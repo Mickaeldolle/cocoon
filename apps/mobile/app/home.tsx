@@ -24,7 +24,7 @@ import { useSecretGesture } from '@/src/hooks/use-secret-gesture';
 import { useSecretAccessStore } from '@/src/stores/secret-access-store';
 import { useSessionStore } from '@/src/stores/session-store';
 import { useThemeStore } from '@/src/stores/theme-store';
-import { darkTheme, lightTheme, type ColorTokens } from '@/src/theme';
+import { darkTheme, lightTheme, subtleBackground, type ColorTokens } from '@/src/theme';
 
 const labels = { now: 'Maintenant', review: 'À vérifier', confirm: 'À confirmer' } as const;
 
@@ -221,7 +221,7 @@ export default function HomeScreen() {
           <View style={styles.top}>
             <View style={styles.heading}>
               <Text style={styles.kicker}>COCOON</Text>
-              <Text style={styles.title}>L’essentiel, maintenant.</Text>
+              <Text style={styles.title}>Votre assistant personnel</Text>
             </View>
             <View style={styles.topActions}>
               <Pressable
@@ -255,9 +255,10 @@ export default function HomeScreen() {
                 setText(value);
                 setNotice(null);
               }}
-              placeholder="Ex. mardi, Paul vient dîner ; acheter du lait avant"
+              placeholder="Ex. rappel moi mon rendez vous mardi à 10h"
               placeholderTextColor={colors.muted}
               style={styles.input}
+              textAlignVertical="center"
             />
             <VoiceCapture
               accessToken={token}
@@ -363,7 +364,7 @@ export default function HomeScreen() {
 
 function makeStyles(colors: ColorTokens) {
   return StyleSheet.create({
-    screen: { flex: 1, backgroundColor: colors.linen },
+    screen: { flex: 1, ...subtleBackground(colors) },
     gestureArea: { flex: 1 },
     content: { padding: 24, paddingBottom: 44 },
     top: {
@@ -381,6 +382,7 @@ function makeStyles(colors: ColorTokens) {
       fontWeight: '700',
       letterSpacing: -0.7,
       marginTop: 8,
+      marginBottom: 16,
     },
     intro: { color: colors.muted, fontSize: 16, lineHeight: 23, marginTop: 12 },
     profile: {
@@ -395,23 +397,23 @@ function makeStyles(colors: ColorTokens) {
     profileText: { color: colors.ink, fontSize: 20 },
     capture: {
       alignItems: 'flex-end',
-      backgroundColor: colors.white,
-      borderColor: colors.spruce,
-      borderRadius: 18,
-      borderWidth: 1,
       flexDirection: 'row',
+      gap: 8,
       marginTop: 24,
-      padding: 8,
     },
     input: {
+      backgroundColor: colors.white,
+      borderColor: colors.border,
+      borderRadius: 22,
+      borderWidth: 1,
       color: colors.ink,
       flex: 1,
-      fontSize: 16,
-      lineHeight: 22,
-      maxHeight: 120,
-      minHeight: 52,
-      paddingHorizontal: 8,
-      paddingTop: 10,
+      fontSize: 15,
+      maxHeight: 110,
+      minHeight: 48,
+      paddingHorizontal: 15,
+      paddingVertical: 8,
+      boxShadow: '0 2px 5px rgba(0, 0, 0, 0.12)',
     },
     disabled: { opacity: 0.55 },
     cancel: { alignSelf: 'flex-start', marginTop: 8, paddingHorizontal: 4, paddingVertical: 5 },

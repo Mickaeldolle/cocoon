@@ -239,6 +239,97 @@ test('Android cancellation or weak biometrics cannot enable session reopening', 
   assert.equal(await weak.service.isAndroidBiometricLoginEnabled(), false);
 });
 
+test('Expo Go Android uses the development biometric path; installed Android uses the protected path', () => {
+  const { secretBiometricMode } = load('src/services/secret-biometric-mode.ts');
+  assert.equal(secretBiometricMode('android', true), 'development');
+  assert.equal(secretBiometricMode('android', false), 'android');
+  assert.equal(secretBiometricMode('web', true), 'none');
+});
+
+test('secret biometric credential is protected on device and enrolled after password proof', async () => {
+  const stored = new Map();
+  const calls = [];
+  const service = load('src/services/android-secret-biometric.ts', {
+    'expo-crypto': { getRandomBytesAsync: async () => new Uint8Array(32).fill(7) },
+    'expo-secure-store': {
+      getItemAsync: async (key, options) => {
+        calls.push(['read', key, options?.requireAuthentication ?? false]);
+        return stored.get(key) ?? null;
+      },
+      setItemAsync: async (key, value, options) => {
+        calls.push(['write', key, options?.requireAuthentication ?? false]);
+        stored.set(key, value);
+      },
+      deleteItemAsync: async (key) => stored.delete(key),
+    },
+    'react-native': { Platform: { OS: 'android' } },
+    '@/src/services/android-biometric-login': { canUseAndroidBiometrics: async () => true },
+    '@/src/services/api': {
+      ApiError: class ApiError extends Error {},
+      secretApi: {
+        enrollAndroidBiometric: async (...args) => calls.push(['enroll', ...args]),
+        unlockWithAndroidBiometric: async (...args) => {
+          calls.push(['unlock', ...args]);
+          return { secret_access_token: 'secret' };
+        },
+      },
+    },
+  });
+  assert.equal(await service.hasAndroidSecretBiometric('user'), false);
+  await service.enrollAndroidSecretBiometric('access', 'user', 'password');
+  assert.equal(await service.hasAndroidSecretBiometric('user'), true);
+  assert.ok(
+    calls.some(
+      ([kind, key, protectedByBiometrics]) =>
+        kind === 'write' &&
+        key === 'cocoon.secret-biometric-credential.user' &&
+        protectedByBiometrics,
+    ),
+  );
+  assert.ok(
+    calls.some(
+      ([kind, token, password]) =>
+        kind === 'enroll' && token === 'access' && password === 'password',
+    ),
+  );
+  assert.equal(
+    (await service.unlockWithAndroidSecretBiometric('access', 'user')).secret_access_token,
+    'secret',
+  );
+  assert.ok(
+    calls.some(
+      ([kind, key, protectedByBiometrics]) =>
+        kind === 'read' &&
+        key === 'cocoon.secret-biometric-credential.user' &&
+        protectedByBiometrics,
+    ),
+  );
+});
+
+test('secret biometric cancellation never sends a credential to the API', async () => {
+  let sent = false;
+  const service = load('src/services/android-secret-biometric.ts', {
+    'expo-crypto': {},
+    'expo-secure-store': {
+      getItemAsync: async () => {
+        throw new Error('cancelled');
+      },
+    },
+    'react-native': { Platform: { OS: 'android' } },
+    '@/src/services/android-biometric-login': { canUseAndroidBiometrics: async () => true },
+    '@/src/services/api': {
+      ApiError: class ApiError extends Error {},
+      secretApi: {
+        unlockWithAndroidBiometric: async () => {
+          sent = true;
+        },
+      },
+    },
+  });
+  await assert.rejects(service.unlockWithAndroidSecretBiometric('access', 'user'), /annulée/);
+  assert.equal(sent, false);
+});
+
 test('session bootstrap waits for biometric confirmation before refreshing', async () => {
   let refreshRead = false;
   let state;

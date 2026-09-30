@@ -107,8 +107,8 @@ export default function SignInScreen() {
     <SafeAreaView style={styles.screen}>
       <View style={styles.content}>
         <Text style={styles.kicker}>COCOON</Text>
-        <Text style={styles.title}>Retrouvez votre famille, simplement.</Text>
-        <Text style={styles.description}>Connectez-vous pour accéder à vos espaces privés.</Text>
+        <Text style={styles.title}>Heureux de vous revoir.</Text>
+        {/* <Text style={styles.description}>Connectez-vous pour accéder à vos espaces privés.</Text> */}
         <AuthForm
           actionLabel="Se connecter"
           busy={busy}
@@ -139,14 +139,15 @@ function makeStyles(colors: ColorTokens) {
       letterSpacing: -0.8,
       lineHeight: 40,
       marginTop: 12,
-    },
-    description: {
-      color: theme.colors.muted,
-      fontSize: 16,
-      lineHeight: 24,
       marginBottom: 24,
-      marginTop: 12,
     },
+    // description: {
+    //   color: theme.colors.muted,
+    //   fontSize: 16,
+    //   lineHeight: 24,
+    //   marginBottom: 24,
+    //   marginTop: 12,
+    // },
     link: {
       color: theme.colors.spruce,
       fontSize: 16,

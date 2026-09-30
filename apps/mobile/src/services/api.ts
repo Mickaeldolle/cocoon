@@ -558,6 +558,19 @@ export const secretApi = {
       '/api/secret/development-biometric/unlock',
       withAccessToken(accessToken, { method: 'POST', body: JSON.stringify({ credential }) }),
     ),
+  enrollAndroidBiometric: (accessToken: string, password: string, credential: string) =>
+    call<void>(
+      '/api/secret/biometric/enroll',
+      withAccessToken(accessToken, {
+        method: 'POST',
+        body: JSON.stringify({ password, credential }),
+      }),
+    ),
+  unlockWithAndroidBiometric: (accessToken: string, credential: string) =>
+    call<SecretAccess>(
+      '/api/secret/biometric/unlock',
+      withAccessToken(accessToken, { method: 'POST', body: JSON.stringify({ credential }) }),
+    ),
   listConversations: (accessToken: string, secretAccessToken: string) =>
     call<Conversation[]>(
       '/api/secret/conversations',

@@ -62,6 +62,20 @@ réouverture de session et changement de compte. Les notifications push exigent 
 leur configuration Firebase/FCM et un test réel ; la présence de `expo-notifications`
 ne suffit pas.
 
+Pour les messages cachés, appliquer la migration API `20260930_33` avant de distribuer
+un nouvel APK. Le premier déverrouillage avec le mot de passe enregistre sur cet
+appareil une preuve protégée par la biométrie Android forte. Le geste d’accès suivant
+déclenche directement l’invite biométrique. Si la biométrie est absente, annulée ou
+invalidée par un changement d’empreintes, le mot de passe reprend le relais. Cette
+méthode locale est distincte des passkeys Web et demande un nouvel APK : le code déjà
+installé ne reçoit pas automatiquement cette fonction.
+
+Dans Expo Go en développement, le geste lance aussi la biométrie automatiquement.
+Ce chemin utilise l’API locale avec `APP_ENV=development` et
+`DEVELOPMENT_BIOMETRIC_UNLOCK_ENABLED=true`. Le téléphone ou l’émulateur doit avoir
+une biométrie forte configurée ; sinon le mot de passe reste proposé. Relancer Expo Go
+après la modification du code JavaScript.
+
 ## iOS : ce que permet un compte Apple gratuit
 
 Le profil `ios-simulator` construit dans le cloud Expo **sans abonnement Apple

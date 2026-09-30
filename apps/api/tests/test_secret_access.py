@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.main import app
+from app.modules.auth.models import User
 from app.modules.conversations.models import ConversationMember, ConversationMemberStatus
 
 
@@ -145,6 +146,13 @@ def test_secret_typing_and_message_retry_stay_inside_accepted_hidden_membership(
     )
     owner_basic = {"Authorization": f"Bearer {owner['access_token']}"}
     invitee_basic = {"Authorization": f"Bearer {invitee['access_token']}"}
+    with app.state.test_session_factory() as session:
+        creator = session.scalar(
+            select(User).where(User.email == "secret-typing-owner@example.com")
+        )
+        assert creator is not None
+        creator.is_superadmin = True
+        session.commit()
     owner_unlock = client.post(
         "/api/secret/unlock", json={"password": password}, headers=owner_basic
     )
@@ -160,6 +168,14 @@ def test_secret_typing_and_message_retry_stay_inside_accepted_hidden_membership(
         **invitee_basic,
         "X-Cocoon-Secret-Access": invitee_unlock.json()["secret_access_token"],
     }
+    assert (
+        client.post(
+            "/api/secret/conversations",
+            json={"invitee": "secret-typing-owner@example.com"},
+            headers=invitee_headers,
+        ).status_code
+        == 403
+    )
     created = client.post(
         "/api/secret/conversations",
         json={"invitee": "secret-typing-invitee@example.com"},
@@ -251,6 +267,79 @@ def test_secret_access_does_not_survive_a_new_application_session(client: TestCl
     assert client.get("/api/secret/conversations", headers=restarted_headers).status_code == 401
 
 
+def test_secret_biometric_requires_password_to_enroll_and_stays_on_its_device(
+    client: TestClient,
+) -> None:
+    password = "une-phrase-de-passe-solide"
+    account = register(
+        client,
+        email="biometrie-secrete@example.com",
+        name="Noa",
+        password=password,
+        installation_id="biometrie-secrete-device-one",
+    )
+    headers = {"Authorization": f"Bearer {account['access_token']}"}
+    credential = "local-device-proof-0123456789abcdef0123456789abcdef"
+    endpoint = "/api/secret/biometric/enroll"
+    assert (
+        client.post(
+            endpoint,
+            json={"password": "wrong-password", "credential": credential},
+            headers=headers,
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/secret/biometric/unlock", json={"credential": credential}, headers=headers
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            endpoint, json={"password": password, "credential": credential}, headers=headers
+        ).status_code
+        == 204
+    )
+    unlocked = client.post(
+        "/api/secret/biometric/unlock", json={"credential": credential}, headers=headers
+    )
+    assert unlocked.status_code == 200
+    assert unlocked.json()["secret_access_token"]
+
+    second_login = client.post(
+        "/api/auth/login",
+        json={
+            **device("biometrie-secrete-device-two"),
+            "email": "biometrie-secrete@example.com",
+            "password": password,
+        },
+    )
+    assert second_login.status_code == 200
+    second_headers = {"Authorization": f"Bearer {second_login.json()['access_token']}"}
+    assert (
+        client.post(
+            "/api/secret/biometric/unlock",
+            json={"credential": credential},
+            headers=second_headers,
+        ).status_code
+        == 401
+    )
+    replacement = "replacement-proof-0123456789abcdef0123456789abcdef"
+    assert (
+        client.post(
+            endpoint, json={"password": password, "credential": replacement}, headers=headers
+        ).status_code
+        == 204
+    )
+    assert (
+        client.post(
+            "/api/secret/biometric/unlock", json={"credential": credential}, headers=headers
+        ).status_code
+        == 401
+    )
+
+
 def test_development_biometric_unlock_does_not_require_a_password_step_up(
     client: TestClient, monkeypatch
 ) -> None:
@@ -281,4 +370,10 @@ def test_development_biometric_unlock_does_not_require_a_password_step_up(
         headers=headers,
     )
     assert biometric_unlock.status_code == 200
+    assert (
+        client.post(
+            "/api/secret/biometric/unlock", json={"credential": credential}, headers=headers
+        ).status_code
+        == 401
+    )
     get_settings.cache_clear()

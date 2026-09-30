@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -14,6 +14,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, secretApi, type SecretAccess } from '@/src/services/api';
+import { secretBiometricMode } from '@/src/services/secret-biometric-mode';
+import {
+  enrollAndroidSecretBiometric,
+  hasAndroidSecretBiometric,
+  unlockWithAndroidSecretBiometric,
+} from '@/src/services/android-secret-biometric';
 import {
   authenticateDevelopmentBiometric,
   hasDevelopmentBiometricCredential,
@@ -25,7 +31,7 @@ import {
 } from '@/src/services/web-passkeys';
 import { useSecretAccessStore } from '@/src/stores/secret-access-store';
 import { useSessionStore } from '@/src/stores/session-store';
-import { darkTheme, lightTheme, type ColorTokens } from '@/src/theme';
+import { darkTheme, lightTheme, subtleBackground, type ColorTokens } from '@/src/theme';
 import { useThemeStore } from '@/src/stores/theme-store';
 
 export default function SecretUnlockScreen() {
@@ -43,11 +49,118 @@ export default function SecretUnlockScreen() {
   const [passkeyHint, setPasskeyHint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState(false);
   const [biometricHint, setBiometricHint] = useState<string | null>(null);
-  const [usePassword, setUsePassword] = useState(!(__DEV__ && Platform.OS !== 'web'));
-  const isDevelopmentNativeDevice = __DEV__ && Platform.OS !== 'web';
+  const [usePassword, setUsePassword] = useState(
+    secretBiometricMode(Platform.OS, __DEV__) === 'none' &&
+      !(Platform.OS === 'web' && webPasskeysSupported()),
+  );
+  const biometricMode = secretBiometricMode(Platform.OS, __DEV__);
+  const isDevelopmentNativeDevice = biometricMode === 'development';
+  const isInstalledAndroid = biometricMode === 'android';
   const isWeb = Platform.OS === 'web';
   const passkeySupported = isWeb && webPasskeysSupported();
+
+  const completeUnlock = useCallback(
+    async (access: SecretAccess) => {
+      if (!accessToken || useSessionStore.getState().accessToken !== accessToken) return;
+      grant(access);
+      try {
+        const conversations = await secretApi.listConversations(
+          accessToken,
+          access.secret_access_token,
+        );
+        if (
+          useSessionStore.getState().accessToken !== accessToken ||
+          useSecretAccessStore.getState().token !== access.secret_access_token
+        )
+          return;
+        if (!conversations.some((conversation) => conversation.membership_status === 'pending')) {
+          const joined = conversations.find(
+            (conversation) => conversation.membership_status === 'accepted',
+          );
+          if (joined) {
+            router.replace({ pathname: '/secret/conversation/[id]', params: { id: joined.id } });
+            return;
+          }
+        }
+      } catch {
+        // The list screen displays the server error and keeps access guarded.
+      }
+      if (
+        useSessionStore.getState().accessToken !== accessToken ||
+        useSecretAccessStore.getState().token !== access.secret_access_token
+      )
+        return;
+      router.replace('/secret/conversations');
+    },
+    [accessToken, grant],
+  );
+
+  const performDevelopmentBiometricUnlock = useCallback(
+    async (isActive: () => boolean = () => true) => {
+      if (!accessToken || !userId) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const credential = await authenticateDevelopmentBiometric(accessToken, userId);
+        let access: SecretAccess;
+        try {
+          access = await secretApi.unlockWithDevelopmentBiometric(accessToken, credential);
+        } catch (caught) {
+          if (!(caught instanceof ApiError) || caught.status !== 401) throw caught;
+          await secretApi.enrollDevelopmentBiometric(accessToken, credential);
+          access = await secretApi.unlockWithDevelopmentBiometric(accessToken, credential);
+        }
+        if (isActive()) await completeUnlock(access);
+      } catch (caught) {
+        if (!isActive()) return;
+        setUsePassword(true);
+        setError(
+          caught instanceof ApiError && caught.status === 404
+            ? 'La biométrie n’est pas activée sur ce serveur. Utilisez votre mot de passe.'
+            : caught instanceof Error
+              ? caught.message
+              : 'La vérification biométrique n’a pas été validée.',
+        );
+      } finally {
+        if (isActive()) setBusy(false);
+      }
+    },
+    [accessToken, userId, completeUnlock],
+  );
+
+  useEffect(() => {
+    if (!isInstalledAndroid || !accessToken || !userId) return;
+    let active = true;
+    void hasAndroidSecretBiometric(userId)
+      .then(async (ready) => {
+        if (!active) return;
+        setBiometricReady(ready);
+        if (!ready) {
+          setUsePassword(true);
+          return;
+        }
+        setBusy(true);
+        try {
+          const access = await unlockWithAndroidSecretBiometric(accessToken, userId);
+          if (active) await completeUnlock(access);
+        } catch (caught) {
+          if (active) {
+            setUsePassword(true);
+            setError(caught instanceof Error ? caught.message : 'Biométrie indisponible.');
+          }
+        } finally {
+          if (active) setBusy(false);
+        }
+      })
+      .catch(() => {
+        if (active) setUsePassword(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [accessToken, completeUnlock, isInstalledAndroid, userId]);
 
   useEffect(() => {
     if (!isDevelopmentNativeDevice) return;
@@ -57,6 +170,7 @@ export default function SecretUnlockScreen() {
         if (active) {
           setBiometricReady(ready);
           if (!ready) setUsePassword(true);
+          else void performDevelopmentBiometricUnlock(() => active);
         }
       })
       .catch((caught) => {
@@ -71,19 +185,35 @@ export default function SecretUnlockScreen() {
     return () => {
       active = false;
     };
-  }, [isDevelopmentNativeDevice]);
+  }, [isDevelopmentNativeDevice, performDevelopmentBiometricUnlock]);
 
   useEffect(() => {
     if (!passkeySupported || !accessToken) return;
     let active = true;
     void secretApi
       .passkeyStatus(accessToken)
-      .then((status) => {
+      .then(async (status) => {
         if (!active) return;
         setPasskeyAvailable(status.available);
         setHasPasskey(status.has_passkeys);
         setUsePassword(!status.available || !status.has_passkeys);
         setPasskeyHint(status.available ? null : 'Les passkeys ne sont pas configurées sur l’API.');
+        if (status.available && status.has_passkeys) {
+          setBusy(true);
+          try {
+            const access = await unlockWithWebPasskey(accessToken);
+            if (active) await completeUnlock(access);
+          } catch (caught) {
+            if (active) {
+              setUsePassword(true);
+              setError(
+                caught instanceof Error ? caught.message : 'Vérification par passkey impossible.',
+              );
+            }
+          } finally {
+            if (active) setBusy(false);
+          }
+        }
       })
       .catch(() => {
         if (active) {
@@ -94,7 +224,7 @@ export default function SecretUnlockScreen() {
     return () => {
       active = false;
     };
-  }, [accessToken, passkeySupported]);
+  }, [accessToken, passkeySupported, completeUnlock]);
 
   async function unlock() {
     if (!accessToken || !password || busy) return;
@@ -102,8 +232,16 @@ export default function SecretUnlockScreen() {
     setError(null);
     try {
       const access = await secretApi.unlock(accessToken, password);
-      grant(access);
-      router.replace('/secret/conversations');
+      if (isInstalledAndroid && userId) {
+        try {
+          if (!(await hasAndroidSecretBiometric(userId))) {
+            await enrollAndroidSecretBiometric(accessToken, userId, password);
+          }
+        } catch {
+          // The password unlock remains valid if device enrollment is unavailable.
+        }
+      }
+      await completeUnlock(access);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Vérification impossible. Réessayez.');
     } finally {
@@ -112,30 +250,16 @@ export default function SecretUnlockScreen() {
     }
   }
 
-  async function unlockWithBiometrics() {
+  async function unlockWithAndroidBiometrics() {
     if (!accessToken || !userId || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const credential = await authenticateDevelopmentBiometric(accessToken, userId);
-      let access: SecretAccess;
-      try {
-        access = await secretApi.unlockWithDevelopmentBiometric(accessToken, credential);
-      } catch (caught) {
-        if (!(caught instanceof ApiError) || caught.status !== 401) throw caught;
-        await secretApi.enrollDevelopmentBiometric(accessToken, credential);
-        access = await secretApi.unlockWithDevelopmentBiometric(accessToken, credential);
-      }
-      grant(access);
-      router.replace('/secret/conversations');
+      const access = await unlockWithAndroidSecretBiometric(accessToken, userId);
+      await completeUnlock(access);
     } catch (caught) {
-      setError(
-        caught instanceof ApiError && caught.status === 404
-          ? 'La biométrie n’est pas activée sur ce serveur. Utilisez votre mot de passe.'
-          : caught instanceof Error
-            ? caught.message
-            : 'La vérification biométrique n’a pas été validée.',
-      );
+      setUsePassword(true);
+      setError(caught instanceof Error ? caught.message : 'Vérification biométrique impossible.');
     } finally {
       setBusy(false);
     }
@@ -147,8 +271,7 @@ export default function SecretUnlockScreen() {
     setError(null);
     try {
       const access = await unlockWithWebPasskey(accessToken);
-      grant(access);
-      router.replace('/secret/conversations');
+      await completeUnlock(access);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Vérification par passkey impossible.');
     } finally {
@@ -163,8 +286,7 @@ export default function SecretUnlockScreen() {
     try {
       const access = await registerWebPasskey(accessToken, password);
       setHasPasskey(true);
-      grant(access);
-      router.replace('/secret/conversations');
+      await completeUnlock(access);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Création de la passkey impossible.');
     } finally {
@@ -175,7 +297,6 @@ export default function SecretUnlockScreen() {
 
   async function revokePasskeys() {
     if (!accessToken || !password || busy || !isWeb) return;
-    if (!window.confirm('Supprimer toutes les passkeys de ce compte ?')) return;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -183,6 +304,7 @@ export default function SecretUnlockScreen() {
       await secretApi.revokePasskeys(accessToken, password);
       setHasPasskey(false);
       setUsePassword(true);
+      setConfirmRevoke(false);
       setNotice('Les passkeys de ce compte ont été supprimées.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Suppression des passkeys impossible.');
@@ -221,7 +343,7 @@ export default function SecretUnlockScreen() {
                   accessibilityLabel="Mot de passe du compte"
                   autoCapitalize="none"
                   autoComplete="current-password"
-                  autoFocus
+                  autoFocus={usePassword}
                   onChangeText={(value) => {
                     setPassword(value);
                     setError(null);
@@ -242,14 +364,23 @@ export default function SecretUnlockScreen() {
                 {error}
               </Text>
             ) : null}
-            {!usePassword && (isDevelopmentNativeDevice || (isWeb && hasPasskey)) ? (
+            {!usePassword &&
+            (isInstalledAndroid || isDevelopmentNativeDevice || (isWeb && hasPasskey)) ? (
               <Pressable
                 accessibilityRole="button"
-                disabled={(isDevelopmentNativeDevice && !biometricReady) || busy}
-                onPress={() => void (isWeb ? unlockWithPasskey() : unlockWithBiometrics())}
+                disabled={
+                  ((isInstalledAndroid || isDevelopmentNativeDevice) && !biometricReady) || busy
+                }
+                onPress={() => {
+                  if (isWeb) void unlockWithPasskey();
+                  else if (isInstalledAndroid) void unlockWithAndroidBiometrics();
+                  else if (!busy) void performDevelopmentBiometricUnlock();
+                }}
                 style={[
                   styles.primary,
-                  ((isDevelopmentNativeDevice && !biometricReady) || busy) && styles.disabled,
+                  (((isInstalledAndroid || isDevelopmentNativeDevice) && !biometricReady) ||
+                    busy) &&
+                    styles.disabled,
                 ]}
               >
                 {busy ? (
@@ -274,7 +405,7 @@ export default function SecretUnlockScreen() {
                 )}
               </Pressable>
             )}
-            {(isDevelopmentNativeDevice && biometricReady) ||
+            {((isInstalledAndroid || isDevelopmentNativeDevice) && biometricReady) ||
             (isWeb && passkeyAvailable && hasPasskey) ? (
               <Pressable
                 accessibilityRole="button"
@@ -305,14 +436,37 @@ export default function SecretUnlockScreen() {
               </Pressable>
             ) : null}
             {isWeb && hasPasskey && usePassword ? (
-              <Pressable
-                accessibilityRole="button"
-                disabled={!password || busy}
-                onPress={() => void revokePasskeys()}
-                style={[styles.alternative, (!password || busy) && styles.disabled]}
-              >
-                <Text style={styles.alternativeText}>Supprimer mes passkeys</Text>
-              </Pressable>
+              confirmRevoke ? (
+                <View>
+                  <Text style={styles.developmentHint}>
+                    Supprimer toutes les passkeys de ce compte ?
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={!password || busy}
+                    onPress={() => void revokePasskeys()}
+                    style={[styles.alternative, (!password || busy) && styles.disabled]}
+                  >
+                    <Text style={styles.alternativeText}>Confirmer la suppression</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => setConfirmRevoke(false)}
+                    style={styles.alternative}
+                  >
+                    <Text style={styles.alternativeText}>Annuler</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={!password || busy}
+                  onPress={() => setConfirmRevoke(true)}
+                  style={[styles.alternative, (!password || busy) && styles.disabled]}
+                >
+                  <Text style={styles.alternativeText}>Supprimer mes passkeys</Text>
+                </Pressable>
+              )
             ) : null}
             {isDevelopmentNativeDevice ? (
               <Text style={styles.developmentHint}>
@@ -329,7 +483,7 @@ export default function SecretUnlockScreen() {
 
 function makeStyles(colors: ColorTokens) {
   return StyleSheet.create({
-    screen: { backgroundColor: colors.linen, flex: 1 },
+    screen: { ...subtleBackground(colors), flex: 1 },
     keyboard: { flex: 1 },
     content: { flexGrow: 1, justifyContent: 'center', padding: darkTheme.spacing.screen },
     card: {
