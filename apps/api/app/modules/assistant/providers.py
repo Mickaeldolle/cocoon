@@ -203,12 +203,15 @@ class _HTTPProvider:
                         if cancel_event is not None and cancel_event.is_set():
                             self._log(started, "cancelled")
                             return
-                        if not line or line == "data: [DONE]":
+                        line = line.strip()
+                        if not line:
                             continue
                         if line.startswith("data:"):
                             line = line.removeprefix("data:").strip()
                         elif self.name == "openai_compatible":
                             continue
+                        if self.name == "openai_compatible" and line == "[DONE]":
+                            break
                         chunk = self._parse_delta(json.loads(line))
                         if chunk:
                             yield chunk
@@ -274,7 +277,14 @@ class OpenAICompatibleProvider(_HTTPProvider):
         )
 
     def _parse_delta(self, body: object) -> str | None:
-        content = body["choices"][0].get("delta", {}).get("content")
+        if not isinstance(body, dict):
+            raise ValueError("invalid stream chunk")
+        choices = body["choices"]
+        if not isinstance(choices, list):
+            raise ValueError("invalid choices")
+        if not choices:
+            return None
+        content = choices[0].get("delta", {}).get("content")
         if content is not None and not isinstance(content, str):
             raise ValueError("invalid delta")
         return content

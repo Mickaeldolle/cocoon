@@ -85,6 +85,24 @@ def test_openai_stream_delivers_deltas_and_closes_on_cancellation(
     assert list(stream) == []
 
 
+def test_openai_stream_accepts_final_usage_chunk_without_choices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = OpenAICompatibleProvider(settings())
+
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"Bonjour"}}]}\n\n'
+                 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+                 'data: {"choices":[],"usage":{"completion_tokens":1}}\n\n'
+                 'data:[DONE]  \n\n',
+        )
+
+    mock_client(monkeypatch, provider, handle)
+    assert "".join(provider.stream_chat([])) == "Bonjour"
+
+
 def test_ollama_chat_and_stream(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = OllamaProvider(settings(llm_provider="ollama", ollama_model="qwen3:8b"))
 
