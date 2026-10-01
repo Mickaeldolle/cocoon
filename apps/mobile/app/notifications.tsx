@@ -1,7 +1,8 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { assistantApi, authApi, type PersonalNotification } from '@/src/services/api';
@@ -76,7 +77,12 @@ export default function NotificationsScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+        <Pressable
+          auditAction="notifications.back"
+          accessibilityRole="button"
+          onPress={() => router.back()}
+          style={styles.back}
+        >
           <Text style={styles.backText}>‹ Accueil</Text>
         </Pressable>
         <Text style={styles.kicker}>SUIVI PERSONNEL</Text>
@@ -86,6 +92,7 @@ export default function NotificationsScreen() {
           notification.
         </Text>
         <Pressable
+          auditAction="notifications.enable"
           accessibilityRole="button"
           disabled={!token || register.isPending}
           onPress={() => register.mutate()}
@@ -102,6 +109,7 @@ export default function NotificationsScreen() {
             </Text>
             <View style={styles.confirmationActions}>
               <Pressable
+                auditAction="notifications.disable.cancel"
                 accessibilityRole="button"
                 disabled={revoke.isPending}
                 onPress={() => setConfirmingDisable(false)}
@@ -110,6 +118,7 @@ export default function NotificationsScreen() {
                 <Text style={styles.secondaryActionText}>Annuler</Text>
               </Pressable>
               <Pressable
+                auditAction="notifications.disable.confirm"
                 accessibilityRole="button"
                 disabled={!token || revoke.isPending}
                 onPress={() => revoke.mutate()}
@@ -123,6 +132,7 @@ export default function NotificationsScreen() {
           </View>
         ) : (
           <Pressable
+            auditAction="notifications.disable.prompt"
             accessibilityRole="button"
             disabled={!token || revoke.isPending}
             onPress={() => setConfirmingDisable(true)}
@@ -146,7 +156,11 @@ export default function NotificationsScreen() {
             <Text style={styles.alertText}>
               Réessayez lorsque la connexion à Cocoon sera rétablie.
             </Text>
-            <Pressable onPress={() => void notifications.refetch()} style={styles.retry}>
+            <Pressable
+              auditAction="notifications.retry"
+              onPress={() => void notifications.refetch()}
+              style={styles.retry}
+            >
               <Text style={styles.retryText}>Réessayer</Text>
             </Pressable>
           </View>
@@ -177,6 +191,7 @@ export default function NotificationsScreen() {
             </View>
           ) : (
             <Pressable
+              auditAction="notifications.open"
               key={notification.id}
               accessibilityRole="button"
               accessibilityLabel={`Marquer comme lu : ${notification.title}`}

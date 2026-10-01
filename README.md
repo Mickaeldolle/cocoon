@@ -30,7 +30,7 @@ Une instance PostgreSQL lancée dans WSL convient si elle est exposée sur `loca
 ```text
 python -m pip install -e ".[dev]"
 alembic upgrade head
-uv run python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
+uv run python -m uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload --no-proxy-headers
 ```
 
 L’API est alors disponible sur `http://localhost:8002/health`.

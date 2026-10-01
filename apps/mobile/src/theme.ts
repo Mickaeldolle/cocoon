@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+
 export const darkTheme = {
   colors: {
     ink: '#F4F5F7',
@@ -57,10 +59,10 @@ export type ColorTokens = { [Key in keyof typeof darkTheme.colors]: string };
 export type AppTheme = Omit<typeof darkTheme, 'colors'> & { colors: ColorTokens };
 
 export function subtleBackground(colors: ColorTokens) {
-  return {
-    backgroundColor: colors.linen,
-    experimental_backgroundImage: `linear-gradient(155deg, ${colors.linen} 0%, ${colors.spruceSoft} 48%, ${colors.linen} 100%)`,
-  } as const;
+  const gradient = `linear-gradient(155deg, ${colors.linen} 0%, ${colors.spruceSoft} 48%, ${colors.linen} 100%)`;
+  return Platform.OS === 'web'
+    ? { backgroundColor: colors.linen, backgroundImage: gradient }
+    : { backgroundColor: colors.linen, experimental_backgroundImage: gradient };
 }
 
 // Legacy default used by screens not yet migrated to the interactive theme switch.

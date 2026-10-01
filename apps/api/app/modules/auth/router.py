@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from secrets import token_bytes
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -17,7 +17,13 @@ from webauthn.helpers import options_to_json
 from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
 
 from app.core.database import get_session
-from app.core.security import hash_password
+from app.core.security import decode_normal_access_token, hash_password
+from app.modules.audit.service import (
+    attempted_identity_reference,
+    normalized_platform,
+    note_request_details,
+    note_response_details,
+)
 from app.modules.auth.consents import minimum_policy_version, require_active_consent
 from app.modules.auth.dependencies import (
     AuthenticatedSession,
@@ -64,8 +70,22 @@ def consent_response(consent: UserConsent) -> ConsentResponse:
     )
 
 
+def mark_audit_login(request: Request, tokens: TokenPair, session: Session) -> None:
+    claims = decode_normal_access_token(tokens.access_token)
+    request.state.audit_user_id = UUID(claims["sub"])
+    request.state.audit_session_id = UUID(claims["sid"])
+    user_session = session.get(UserSession, request.state.audit_session_id)
+    if user_session is not None:
+        request.state.audit_device_id = user_session.device_id
+        request.state.audit_platform = normalized_platform(user_session.device.platform)
+    note_response_details(request, token_issued=True)
+
+
 @router.post("/register", response_model=TokenPair, status_code=status.HTTP_201_CREATED)
-def register(payload: RegisterRequest, session: Session = Depends(get_session)) -> TokenPair:
+def register(
+    payload: RegisterRequest, request: Request, session: Session = Depends(get_session)
+) -> TokenPair:
+    note_request_details(request, platform=payload.platform.strip().lower())
     user = User(
         email=payload.email.lower(),
         display_name=payload.display_name.strip(),
@@ -81,21 +101,30 @@ def register(payload: RegisterRequest, session: Session = Depends(get_session)) 
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Un compte existe déjà avec cet email."
         ) from error
+    mark_audit_login(request, tokens, session)
     return tokens
 
 
 @router.post("/login", response_model=TokenPair)
-def login(payload: LoginRequest, session: Session = Depends(get_session)) -> TokenPair:
+def login(
+    payload: LoginRequest, request: Request, session: Session = Depends(get_session)
+) -> TokenPair:
+    request.state.audit_attempted_identity_ref = attempted_identity_reference(payload.email)
+    note_request_details(request, platform=payload.platform.strip().lower())
     user = authenticate(session, payload.email, payload.password)
     tokens = issue_session(session, user, payload)
     session.commit()
+    mark_audit_login(request, tokens, session)
     return tokens
 
 
 @router.post("/passkeys/login/options")
 def passkey_login_options(
-    payload: PasskeyLoginOptionsRequest, session: Session = Depends(get_session)
+    payload: PasskeyLoginOptionsRequest,
+    request: Request,
+    session: Session = Depends(get_session),
 ) -> dict:
+    request.state.audit_attempted_identity_ref = attempted_identity_reference(payload.email)
     origin, rp_id = require_webauthn_relying_party()
     user = session.scalar(select(User).where(User.email == payload.email.lower(), User.is_active))
     credentials = (
@@ -133,8 +162,11 @@ def passkey_login_options(
 
 @router.post("/passkeys/login/verify", response_model=TokenPair)
 def passkey_login_verify(
-    payload: PasskeyLoginVerifyRequest, session: Session = Depends(get_session)
+    payload: PasskeyLoginVerifyRequest,
+    request: Request,
+    session: Session = Depends(get_session),
 ) -> TokenPair:
+    note_request_details(request, platform=payload.platform.strip().lower())
     origin, rp_id = require_webauthn_relying_party()
     if payload.platform != "web":
         raise HTTPException(status_code=400, detail="Connexion passkey réservée au navigateur.")
@@ -189,13 +221,17 @@ def passkey_login_verify(
     stored.last_used_at = datetime.now(UTC)
     tokens = issue_session(session, user, payload)
     session.commit()
+    mark_audit_login(request, tokens, session)
     return tokens
 
 
 @router.post("/refresh", response_model=TokenPair)
-def refresh(payload: RefreshRequest, session: Session = Depends(get_session)) -> TokenPair:
+def refresh(
+    payload: RefreshRequest, request: Request, session: Session = Depends(get_session)
+) -> TokenPair:
     tokens = rotate_session(session, payload.refresh_token)
     session.commit()
+    mark_audit_login(request, tokens, session)
     return tokens
 
 
@@ -301,6 +337,7 @@ def list_consents(
 def grant_consent(
     policy_key: str,
     payload: ConsentUpdate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> ConsentResponse:
@@ -312,6 +349,7 @@ def grant_consent(
             status_code=422,
             detail="La version de consentement est obsolète.",
         )
+    note_request_details(request, policy_key=policy_key, policy_version=payload.policy_version)
     consent = session.scalar(
         select(UserConsent).where(
             UserConsent.user_id == current_user.id,
@@ -326,12 +364,14 @@ def grant_consent(
     session.add(consent)
     session.commit()
     session.refresh(consent)
+    note_response_details(request, active=True, policy_version=consent.policy_version)
     return consent_response(consent)
 
 
 @router.delete("/consents/{policy_key}", response_model=ConsentResponse)
 def revoke_consent(
     policy_key: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> ConsentResponse:
@@ -343,6 +383,7 @@ def revoke_consent(
     )
     if consent is None:
         raise HTTPException(status_code=404, detail="Consentement introuvable.")
+    note_request_details(request, policy_key=policy_key)
     consent.revoked_at = datetime.now(UTC)
     if policy_key == "notifications.push":
         session.query(Device).filter(Device.user_id == current_user.id).update(
@@ -350,4 +391,5 @@ def revoke_consent(
         )
     session.commit()
     session.refresh(consent)
+    note_response_details(request, active=False)
     return consent_response(consent)

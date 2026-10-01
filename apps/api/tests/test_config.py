@@ -36,3 +36,19 @@ def test_invalid_nonblank_settings_still_fail(field: str, value: str) -> None:
             jwt_secret="test-only-secret-with-at-least-thirty-two-characters",
             **{field: value},
         )
+
+
+def test_audit_proxy_trust_requires_a_specific_valid_network() -> None:
+    valid = Settings(
+        _env_file=None,
+        jwt_secret="test-only-secret-with-at-least-thirty-two-characters",
+        audit_trusted_proxy_cidrs=["192.0.2.10/32"],
+    )
+    assert valid.audit_trusted_proxy_cidrs == ["192.0.2.10/32"]
+    for cidr in ("not-an-ip", "0.0.0.0/0", "::/0"):
+        with pytest.raises(ValidationError):
+            Settings(
+                _env_file=None,
+                jwt_secret="test-only-secret-with-at-least-thirty-two-characters",
+                audit_trusted_proxy_cidrs=[cidr],
+            )

@@ -1,10 +1,10 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -81,7 +81,12 @@ export default function ProfileScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+        <Pressable
+          auditAction="profile.back"
+          accessibilityRole="button"
+          onPress={() => router.back()}
+          style={styles.back}
+        >
           <Text style={styles.backText}>‹ Accueil</Text>
         </Pressable>
         <Text style={styles.kicker}>MON ESPACE</Text>
@@ -94,6 +99,7 @@ export default function ProfileScreen() {
           <View style={styles.themeSwitch}>
             {(['dark', 'light'] as const).map((candidate) => (
               <Pressable
+                auditAction="profile.theme.select"
                 key={candidate}
                 accessibilityRole="button"
                 accessibilityState={{ selected: mode === candidate }}
@@ -120,6 +126,7 @@ export default function ProfileScreen() {
           <AndroidBiometricSettings styles={styles} colors={colors} />
         ) : null}
         <Pressable
+          auditAction="profile.memory.open"
           accessibilityRole="button"
           onPress={() => router.push('/memory' as never)}
           style={styles.memoryButton}
@@ -130,6 +137,7 @@ export default function ProfileScreen() {
           </Text>
         </Pressable>
         <Pressable
+          auditAction="profile.projects.open"
           accessibilityRole="button"
           onPress={() => router.push('/projects' as never)}
           style={styles.memoryButton}
@@ -155,6 +163,7 @@ export default function ProfileScreen() {
                 : 'Vos champs restent visibles. Réessayez après avoir vérifié votre connexion.'}
             </Text>
             <Pressable
+              auditAction="profile.retry"
               accessibilityRole="button"
               onPress={() => void profile.refetch()}
               style={styles.retry}
@@ -172,6 +181,7 @@ export default function ProfileScreen() {
           />
         ) : null}
         <Pressable
+          auditAction="profile.logout"
           accessibilityRole="button"
           accessibilityLabel="Se déconnecter de Cocoon"
           disabled={isSigningOut}
@@ -267,6 +277,7 @@ function AndroidBiometricSettings({
             </Text>
           ) : null}
           <Pressable
+            auditAction="profile.biometric.toggle"
             accessibilityRole="button"
             accessibilityState={{ selected: enabled }}
             disabled={busy}
@@ -369,6 +380,7 @@ function PasskeyManager({
             État des passkeys indisponible. Vérifiez la connexion.
           </Text>
           <Pressable
+            auditAction="profile.passkey.retry"
             accessibilityRole="button"
             onPress={() => void status.refetch()}
             style={styles.retry}
@@ -397,6 +409,7 @@ function PasskeyManager({
             value={password}
           />
           <Pressable
+            auditAction="profile.passkey.create"
             accessibilityRole="button"
             disabled={!password || busy}
             onPress={() => void createPasskey()}
@@ -406,6 +419,7 @@ function PasskeyManager({
           </Pressable>
           {status.data.has_passkeys ? (
             <Pressable
+              auditAction="profile.passkey.revoke"
               accessibilityRole="button"
               disabled={!password || busy}
               onPress={() => void revokePasskeys()}
@@ -465,6 +479,7 @@ function DeviceManager({
           </View>
           {!device.current ? (
             <Pressable
+              auditAction="profile.device.revoke"
               accessibilityRole="button"
               accessibilityLabel={`Révoquer ${device.name}`}
               disabled={revoke.isPending}
@@ -589,6 +604,7 @@ function ProfileEditor({
         </Text>
       ) : null}
       <Pressable
+        auditAction="profile.save"
         accessibilityRole="button"
         disabled={save.isPending}
         onPress={() => save.mutate()}

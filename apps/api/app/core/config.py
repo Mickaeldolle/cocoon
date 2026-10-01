@@ -1,4 +1,5 @@
 from functools import lru_cache
+from ipaddress import ip_network
 from pathlib import Path
 
 from pydantic import Field, field_validator, model_validator
@@ -62,6 +63,9 @@ class Settings(BaseSettings):
     worker_interval_seconds: int = Field(default=60, ge=5, le=3600)
     worker_lease_seconds: int = Field(default=600, ge=30, le=3600)
     metrics_token: str | None = Field(default=None, min_length=32)
+    audit_retention_days: int = Field(default=90, ge=7, le=3650)
+    # Only peers in these ranges may supply X-Forwarded-For to the audit trail.
+    audit_trusted_proxy_cidrs: list[str] = Field(default_factory=list)
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -82,6 +86,15 @@ class Settings(BaseSettings):
     def disable_blank_metrics_token(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("audit_trusted_proxy_cidrs")
+    @classmethod
+    def validate_audit_trusted_proxies(cls, value: list[str]) -> list[str]:
+        for cidr in value:
+            network = ip_network(cidr, strict=False)
+            if network.prefixlen == 0:
+                raise ValueError("Un proxy de confiance ne peut pas couvrir toutes les adresses IP")
         return value
 
     @model_validator(mode="after")

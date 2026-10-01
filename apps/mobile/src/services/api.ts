@@ -362,6 +362,22 @@ function withAccessToken(accessToken: string, options: RequestInit = {}): Reques
   };
 }
 
+/** Best-effort telemetry; never delay or fail the user's action. */
+export async function sendButtonPress(accessToken: string, action: string): Promise<void> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    await fetch(`${apiUrl}/api/audit/button-press`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export const authApi = {
   register: (payload: DeviceInput & { email: string; display_name: string; password: string }) =>
     call<TokenPair>('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) }),

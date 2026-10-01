@@ -1,5 +1,7 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
+import { reportButtonPress } from '@/src/services/ui-audit';
 import { useRef } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text } from 'react-native';
 
 import { darkTheme, type ColorTokens } from '@/src/theme';
 
@@ -36,20 +38,27 @@ export function VoiceCapture({
 
   return (
     <Pressable
+      auditAction={
+        sending ? 'assistant.stop' : hasText ? 'assistant.send' : 'assistant.composer.tap_empty'
+      }
+      auditLongPressAction="assistant.voice.unavailable"
       accessibilityRole="button"
       accessibilityLabel={sending && onCancelSend ? 'Arrêter la génération' : 'Envoyer le texte'}
       accessibilityHint="Un appui envoie le texte. La transcription audio est actuellement indisponible."
       accessibilityState={{ busy: sending, disabled: unavailable }}
       accessibilityActions={[{ name: 'voice', label: 'Disponibilité de la transcription audio' }]}
       onAccessibilityAction={({ nativeEvent }) => {
-        if (nativeEvent.actionName === 'voice') explainVoice();
+        if (nativeEvent.actionName === 'voice' && !unavailable && !sending) {
+          reportButtonPress('assistant.voice.unavailable');
+          explainVoice();
+        }
       }}
       disabled={unavailable}
       delayLongPress={350}
       onPressIn={() => {
         held.current = false;
       }}
-      onLongPress={explainVoice}
+      onLongPress={sending ? undefined : explainVoice}
       onPress={() => {
         if (held.current || unavailable) return;
         if (sending) onCancelSend?.();

@@ -7,12 +7,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.core.database import engine
 from app.core.metrics import RuntimeMetrics
 from app.modules.admin.router import router as admin_router
 from app.modules.assistant.router import router as assistant_router
+from app.modules.audit.router import router as audit_router
+from app.modules.audit.service import record_request
 from app.modules.auth.router import router as auth_router
 from app.modules.conversations.router import router as conversations_router
 from app.modules.family_spaces.router import router as family_spaces_router
@@ -52,6 +55,15 @@ app.add_middleware(
 )
 
 
+def safe_log_route(request: Request) -> str:
+    route = getattr(request.scope.get("route"), "path", None)
+    if route is None:
+        return "<unmatched>"
+    if route.startswith("/api/secret/"):
+        return "/api/secret/*"
+    return route
+
+
 @app.middleware("http")
 async def prevent_api_caching(request: Request, call_next):
     raw_request_id = request.headers.get("X-Request-ID")
@@ -64,28 +76,43 @@ async def prevent_api_caching(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception:
-        runtime_metrics.observe_request(
-            request.method, 500, perf_counter() - started
-        )
+        duration = perf_counter() - started
+        runtime_metrics.observe_request(request.method, 500, duration)
         http_logger.exception(
             "request_failed method=%s path=%s status=500 duration_ms=%d request_id=%s",
             request.method,
-            request.url.path,
-            round((perf_counter() - started) * 1000),
+            safe_log_route(request),
+            round(duration * 1000),
             request_id,
+        )
+        await run_in_threadpool(
+            record_request,
+            request,
+            request_id=request_id,
+            status_code=500,
+            duration_ms=round(duration * 1000),
         )
         raise
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     response.headers["X-Request-ID"] = request_id
-    runtime_metrics.observe_request(request.method, response.status_code, perf_counter() - started)
+    duration = perf_counter() - started
+    runtime_metrics.observe_request(request.method, response.status_code, duration)
     http_logger.info(
         "request_complete method=%s path=%s status=%s duration_ms=%d request_id=%s",
         request.method,
-        request.url.path,
+        safe_log_route(request),
         response.status_code,
-        round((perf_counter() - started) * 1000),
+        round(duration * 1000),
         request_id,
+    )
+    await run_in_threadpool(
+        record_request,
+        request,
+        request_id=request_id,
+        status_code=response.status_code,
+        duration_ms=round(duration * 1000),
+        response=response,
     )
     return response
 
@@ -123,6 +150,7 @@ def metrics(request: Request) -> PlainTextResponse:
 
 
 app.include_router(auth_router)
+app.include_router(audit_router)
 app.include_router(admin_router)
 app.include_router(assistant_router)
 app.include_router(personal_router)

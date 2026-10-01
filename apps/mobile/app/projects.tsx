@@ -1,15 +1,8 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { personalApi, type PersonalProject } from '@/src/services/api';
@@ -67,7 +60,12 @@ export default function ProjectsScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+        <Pressable
+          auditAction="projects.back"
+          accessibilityRole="button"
+          onPress={() => router.back()}
+          style={styles.back}
+        >
           <Text style={styles.backText}>‹ Profil</Text>
         </Pressable>
         <Text style={styles.kicker}>MON ESPACE</Text>
@@ -98,6 +96,7 @@ export default function ProjectsScreen() {
             style={[styles.input, styles.multiline]}
           />
           <Pressable
+            auditAction="projects.create"
             accessibilityRole="button"
             disabled={!canCreate}
             onPress={() => create.mutate()}
@@ -120,6 +119,7 @@ export default function ProjectsScreen() {
           <View style={styles.alert}>
             <Text style={styles.alertTitle}>Les projets ne peuvent pas être chargés.</Text>
             <Pressable
+              auditAction="projects.retry"
               accessibilityRole="button"
               onPress={() => void projects.refetch()}
               style={styles.retry}
@@ -172,6 +172,7 @@ function ProjectCard({
       {project.description ? <Text style={styles.description}>{project.description}</Text> : null}
       {project.status === 'completed' ? (
         <Pressable
+          auditAction="projects.reopen"
           accessibilityRole="button"
           disabled={pending}
           onPress={() => onStatusChange('active')}
@@ -181,6 +182,7 @@ function ProjectCard({
         </Pressable>
       ) : (
         <Pressable
+          auditAction="projects.status.toggle"
           accessibilityRole="button"
           disabled={pending}
           onPress={() => onStatusChange(nextStatus)}
@@ -193,6 +195,7 @@ function ProjectCard({
       )}
       {project.status !== 'completed' ? (
         <Pressable
+          auditAction="projects.complete"
           accessibilityRole="button"
           disabled={pending}
           onPress={() => onStatusChange('completed')}

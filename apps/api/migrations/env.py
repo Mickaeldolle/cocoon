@@ -6,6 +6,7 @@ from sqlalchemy import engine_from_config, pool
 from app.core.config import get_settings
 from app.core.database import Base
 from app.modules.auth import models as auth_models  # noqa: F401
+from app.modules.audit import models as audit_models  # noqa: F401
 from app.modules.conversations import models as conversation_models  # noqa: F401
 from app.modules.family_spaces import models as family_space_models  # noqa: F401
 from app.modules.personal import models as personal_models  # noqa: F401

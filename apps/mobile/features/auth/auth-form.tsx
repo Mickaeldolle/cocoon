@@ -1,7 +1,8 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
-import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
 import { z } from 'zod';
 
 import { theme } from '@/src/theme';
@@ -114,6 +115,7 @@ export function AuthForm({
           )}
         />
         <Pressable
+          auditAction="auth.password.visibility"
           accessibilityLabel={
             passwordVisible ? 'Masquer le mot de passe' : 'Afficher le mot de passe'
           }
@@ -127,6 +129,7 @@ export function AuthForm({
       {errors.password ? <Text style={styles.fieldError}>{errors.password.message}</Text> : null}
 
       <Pressable
+        auditAction="auth.submit"
         accessibilityRole="button"
         disabled={busy}
         onPress={handleSubmit(onSubmit)}
@@ -144,6 +147,7 @@ export function AuthForm({
       </Pressable>
       {onBiometric ? (
         <Pressable
+          auditAction="auth.biometric"
           accessibilityRole="button"
           disabled={busy}
           onPress={() => void onBiometric()}
@@ -156,6 +160,7 @@ export function AuthForm({
         passkeyAvailable ? (
           <>
             <Pressable
+              auditAction="auth.passkey"
               accessibilityRole="button"
               disabled={busy}
               onPress={() => void onPasskey(getValues('email'))}

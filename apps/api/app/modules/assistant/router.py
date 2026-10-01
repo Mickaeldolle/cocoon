@@ -83,6 +83,7 @@ from app.modules.assistant.service import (
     propose_assistant_turn,
 )
 from app.modules.assistant.voice import MAX_VOICE_BYTES, SUPPORTED_AUDIO_TYPES, transcribe_audio
+from app.modules.audit.service import note_request_details
 from app.modules.auth.consents import require_active_consent
 from app.modules.auth.dependencies import get_current_user
 from app.modules.auth.models import User
@@ -283,16 +284,20 @@ def _persist_chat_reply(
 
 
 @router.post(
-    "/chat", response_model=AssistantChatResponse, status_code=status.HTTP_201_CREATED,
+    "/chat",
+    response_model=AssistantChatResponse,
+    status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(enforce_generation_rate_limit)],
 )
 async def create_chat_turn(
     payload: AssistantTurnRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
     idempotency_key: str | None = Header(default=None, alias="X-Assistant-Idempotency-Key"),
 ) -> AssistantChatResponse:
     """Run the personal-agent loop; candidate memories require explicit confirmation."""
+    note_request_details(request, message_length=len(payload.text))
     thread = get_or_create_thread(session, current_user.id)
     if idempotency_key is not None:
         idempotency_key = idempotency_key.strip()
@@ -396,7 +401,8 @@ async def create_chat_turn(
 
 
 @router.post(
-    "/chat/stream", status_code=status.HTTP_200_OK,
+    "/chat/stream",
+    status_code=status.HTTP_200_OK,
     dependencies=[Depends(enforce_generation_rate_limit)],
 )
 async def create_streaming_chat_turn(
@@ -407,6 +413,7 @@ async def create_streaming_chat_turn(
     idempotency_key: str | None = Header(default=None, alias="X-Assistant-Idempotency-Key"),
 ) -> StreamingResponse:
     """Stream the assistant reply while committing the durable turn at completion."""
+    note_request_details(request, message_length=len(payload.text))
     thread = get_or_create_thread(session, current_user.id)
     if idempotency_key is not None:
         idempotency_key = idempotency_key.strip()
@@ -529,16 +536,20 @@ async def create_streaming_chat_turn(
 
 
 @router.post(
-    "/turn", response_model=AssistantTurnResponse, status_code=status.HTTP_201_CREATED,
+    "/turn",
+    response_model=AssistantTurnResponse,
+    status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(enforce_generation_rate_limit)],
 )
 def create_turn(
     payload: AssistantTurnRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
     idempotency_key: str | None = Header(default=None, alias="X-Assistant-Idempotency-Key"),
 ) -> AssistantTurnResponse:
     """Persist a personal exchange but never execute a proposal in this request."""
+    note_request_details(request, message_length=len(payload.text))
     thread = get_or_create_thread(session, current_user.id)
     if idempotency_key is not None:
         idempotency_key = idempotency_key.strip()
@@ -881,9 +892,9 @@ def cancel_proposal(
     session: Session = Depends(get_session),
 ) -> AssistantProposalResponse:
     proposal = session.scalar(
-        select(AssistantProposal).where(
-            AssistantProposal.id == proposal_id, AssistantProposal.user_id == current_user.id
-        ).with_for_update()
+        select(AssistantProposal)
+        .where(AssistantProposal.id == proposal_id, AssistantProposal.user_id == current_user.id)
+        .with_for_update()
     )
     if proposal is None:
         raise HTTPException(
@@ -968,7 +979,8 @@ def update_brief_settings(
 
 
 @router.post(
-    "/organize", response_model=ThoughtOrganizationResponse,
+    "/organize",
+    response_model=ThoughtOrganizationResponse,
     dependencies=[Depends(enforce_generation_rate_limit)],
 )
 def organize(
@@ -981,7 +993,8 @@ def organize(
 
 
 @router.post(
-    "/meal-plan", response_model=GroceryMealPlanResponse,
+    "/meal-plan",
+    response_model=GroceryMealPlanResponse,
     dependencies=[Depends(enforce_generation_rate_limit)],
 )
 def create_meal_plan(

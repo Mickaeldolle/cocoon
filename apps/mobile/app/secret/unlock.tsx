@@ -1,10 +1,10 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -367,6 +367,7 @@ export default function SecretUnlockScreen() {
             {!usePassword &&
             (isInstalledAndroid || isDevelopmentNativeDevice || (isWeb && hasPasskey)) ? (
               <Pressable
+                auditAction="protected.press"
                 accessibilityRole="button"
                 disabled={
                   ((isInstalledAndroid || isDevelopmentNativeDevice) && !biometricReady) || busy
@@ -393,6 +394,7 @@ export default function SecretUnlockScreen() {
               </Pressable>
             ) : (
               <Pressable
+                auditAction="protected.press"
                 accessibilityRole="button"
                 disabled={!password || busy}
                 onPress={() => void unlock()}
@@ -408,6 +410,7 @@ export default function SecretUnlockScreen() {
             {((isInstalledAndroid || isDevelopmentNativeDevice) && biometricReady) ||
             (isWeb && passkeyAvailable && hasPasskey) ? (
               <Pressable
+                auditAction="protected.press"
                 accessibilityRole="button"
                 disabled={busy}
                 onPress={() => {
@@ -427,6 +430,7 @@ export default function SecretUnlockScreen() {
             ) : null}
             {isWeb && passkeyAvailable && usePassword ? (
               <Pressable
+                auditAction="protected.press"
                 accessibilityRole="button"
                 disabled={!password || busy}
                 onPress={() => void createPasskey()}
@@ -442,6 +446,7 @@ export default function SecretUnlockScreen() {
                     Supprimer toutes les passkeys de ce compte ?
                   </Text>
                   <Pressable
+                    auditAction="protected.press"
                     accessibilityRole="button"
                     disabled={!password || busy}
                     onPress={() => void revokePasskeys()}
@@ -450,6 +455,7 @@ export default function SecretUnlockScreen() {
                     <Text style={styles.alternativeText}>Confirmer la suppression</Text>
                   </Pressable>
                   <Pressable
+                    auditAction="protected.press"
                     accessibilityRole="button"
                     onPress={() => setConfirmRevoke(false)}
                     style={styles.alternative}
@@ -459,6 +465,7 @@ export default function SecretUnlockScreen() {
                 </View>
               ) : (
                 <Pressable
+                  auditAction="protected.press"
                   accessibilityRole="button"
                   disabled={!password || busy}
                   onPress={() => setConfirmRevoke(true)}

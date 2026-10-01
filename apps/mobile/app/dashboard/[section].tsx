@@ -1,15 +1,8 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { assistantApi, personalApi, type MealPlanEntry } from '@/src/services/api';
@@ -128,7 +121,12 @@ export default function DashboardSectionScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+        <Pressable
+          auditAction="dashboard.back"
+          accessibilityRole="button"
+          onPress={() => router.back()}
+          style={styles.back}
+        >
           <Text style={styles.backText}>‹ Tableau de bord</Text>
         </Pressable>
         <Text style={styles.kicker}>{kicker}</Text>
@@ -142,7 +140,11 @@ export default function DashboardSectionScreen() {
                 ? `Objectif : -${weightLoss.toFixed(1)} kg`
                 : 'Ajoutez vos mesures et votre cible dans votre profil.'}
             </Text>
-            <Pressable accessibilityRole="button" onPress={() => router.push('/profile')}>
+            <Pressable
+              auditAction="dashboard.profile.open"
+              accessibilityRole="button"
+              onPress={() => router.push('/profile')}
+            >
               <Text style={styles.link}>Ouvrir mon profil →</Text>
             </Pressable>
           </View>
@@ -174,6 +176,7 @@ export default function DashboardSectionScreen() {
               <View style={styles.choices}>
                 {(Object.keys(trainingLabels) as (keyof typeof trainingLabels)[]).map((next) => (
                   <Pressable
+                    auditAction="dashboard.training.select"
                     key={next}
                     accessibilityRole="button"
                     onPress={() => setType(next)}
@@ -200,6 +203,7 @@ export default function DashboardSectionScreen() {
             </Text>
           ) : null}
           <Pressable
+            auditAction="dashboard.item.add"
             accessibilityRole="button"
             disabled={add.isPending}
             onPress={() => add.mutate()}
@@ -223,7 +227,11 @@ export default function DashboardSectionScreen() {
               Cette version de l’API ne propose pas encore vos données personnelles. Redémarrez
               l’API Cocoon puis réessayez.
             </Text>
-            <Pressable accessibilityRole="button" onPress={() => void activeQuery.refetch()}>
+            <Pressable
+              auditAction="dashboard.retry"
+              accessibilityRole="button"
+              onPress={() => void activeQuery.refetch()}
+            >
               <Text style={styles.link}>Réessayer</Text>
             </Pressable>
           </View>
@@ -246,6 +254,7 @@ export default function DashboardSectionScreen() {
                   : null;
             return (
               <Pressable
+                auditAction="dashboard.item.toggle"
                 key={item.id}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked, disabled: toggle.isPending }}
@@ -268,6 +277,7 @@ export default function DashboardSectionScreen() {
         </View>
         {section === 'groceries' && groceries.data?.length ? (
           <Pressable
+            auditAction="dashboard.meal.plan"
             accessibilityRole="button"
             disabled={plan.isPending}
             onPress={() => plan.mutate()}

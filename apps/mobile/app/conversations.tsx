@@ -1,3 +1,4 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
@@ -5,7 +6,6 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
-  Pressable,
   Platform,
   ScrollView,
   StyleSheet,
@@ -65,10 +65,16 @@ export default function ConversationsScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.topbar}>
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+        <Pressable
+          auditAction="conversations.back"
+          accessibilityRole="button"
+          onPress={() => router.back()}
+          style={styles.back}
+        >
           <Text style={styles.backText}>‹ Accueil</Text>
         </Pressable>
         <Pressable
+          auditAction="conversations.create.toggle"
           accessibilityLabel={open ? 'Fermer la création' : 'Créer une discussion'}
           accessibilityRole="button"
           onPress={() => setOpen((value) => !value)}
@@ -78,7 +84,12 @@ export default function ConversationsScreen() {
         </Pressable>
       </View>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Modal animationType="slide" transparent visible={open} onRequestClose={() => setOpen(false)}>
+        <Modal
+          animationType="slide"
+          transparent
+          visible={open}
+          onRequestClose={() => setOpen(false)}
+        >
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={styles.modalBackdrop}
@@ -90,6 +101,7 @@ export default function ConversationsScreen() {
                   <Text style={styles.modalTitle}>Inviter un proche</Text>
                 </View>
                 <Pressable
+                  auditAction="conversations.create.close"
                   accessibilityLabel="Fermer la modale"
                   accessibilityRole="button"
                   onPress={() => setOpen(false)}
@@ -129,6 +141,7 @@ export default function ConversationsScreen() {
                 </Text>
               ) : null}
               <Pressable
+                auditAction="conversations.create.submit"
                 accessibilityRole="button"
                 disabled={create.isPending}
                 onPress={submit}
@@ -156,11 +169,9 @@ export default function ConversationsScreen() {
         ) : null}
         <View style={styles.list}>
           {conversations.data?.map((conversation) => (
-            <View
-              key={conversation.id}
-              style={styles.row}
-            >
+            <View key={conversation.id} style={styles.row}>
               <Pressable
+                auditAction="conversations.open"
                 accessibilityRole="button"
                 disabled={conversation.membership_status === 'pending'}
                 onPress={() =>
@@ -183,22 +194,24 @@ export default function ConversationsScreen() {
               {conversation.membership_status === 'pending' ? (
                 <View style={styles.inviteActions}>
                   <Pressable
+                    auditAction="conversations.invite.accept"
                     accessibilityRole="button"
                     onPress={() => {
-                      void conversationsApi.accept(accessToken!, conversation.id).then(() =>
-                        client.invalidateQueries({ queryKey: conversationsKey }),
-                      );
+                      void conversationsApi
+                        .accept(accessToken!, conversation.id)
+                        .then(() => client.invalidateQueries({ queryKey: conversationsKey }));
                     }}
                     style={styles.acceptButton}
                   >
                     <Text style={styles.acceptText}>Accepter</Text>
                   </Pressable>
                   <Pressable
+                    auditAction="conversations.invite.decline"
                     accessibilityRole="button"
                     onPress={() => {
-                      void conversationsApi.decline(accessToken!, conversation.id).then(() =>
-                        client.invalidateQueries({ queryKey: conversationsKey }),
-                      );
+                      void conversationsApi
+                        .decline(accessToken!, conversation.id)
+                        .then(() => client.invalidateQueries({ queryKey: conversationsKey }));
                     }}
                     style={styles.declineButton}
                   >

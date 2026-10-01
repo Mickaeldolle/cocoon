@@ -2,13 +2,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
 from app.core.security import decode_normal_access_token, hash_refresh_token
+from app.modules.audit.service import normalized_platform
 from app.modules.auth.models import SecretAccessSession, User, UserSession
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -27,6 +28,7 @@ class AuthenticatedSecretSession:
 
 
 def get_authenticated_session(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     session: Session = Depends(get_session),
 ) -> AuthenticatedSession:
@@ -56,6 +58,10 @@ def get_authenticated_session(
         or not user.is_active
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalide.")
+    request.state.audit_user_id = user.id
+    request.state.audit_session_id = user_session.id
+    request.state.audit_device_id = user_session.device_id
+    request.state.audit_platform = normalized_platform(user_session.device.platform)
     return AuthenticatedSession(user=user, user_session=user_session)
 
 

@@ -1,3 +1,4 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
 import Markdown, { MarkdownIt, type RenderRules } from 'react-native-markdown-display';
@@ -7,7 +8,6 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -186,7 +186,12 @@ export default function AssistantScreen() {
         style={styles.flex}
       >
         <View style={styles.header}>
-          <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+          <Pressable
+            auditAction="assistant.back"
+            accessibilityRole="button"
+            onPress={() => router.back()}
+            style={styles.back}
+          >
             <Text style={styles.backText}>‹ Accueil</Text>
           </Pressable>
           <Text style={styles.title}>Votre assistant</Text>
@@ -250,6 +255,7 @@ export default function AssistantScreen() {
                   <Text style={styles.memoryText}>{String(proposal.payload.summary ?? '')}</Text>
                   <View style={styles.proposalActions}>
                     <Pressable
+                      auditAction="assistant.memory.keep"
                       accessibilityRole="button"
                       accessibilityLabel="Conserver ce souvenir"
                       disabled={confirmMemory.isPending || cancelMemory.isPending}
@@ -259,6 +265,7 @@ export default function AssistantScreen() {
                       <Text style={styles.confirmMemoryText}>Conserver</Text>
                     </Pressable>
                     <Pressable
+                      auditAction="assistant.memory.skip"
                       accessibilityRole="button"
                       accessibilityLabel="Ne pas conserver ce souvenir"
                       disabled={confirmMemory.isPending || cancelMemory.isPending}
@@ -277,6 +284,7 @@ export default function AssistantScreen() {
               <Text style={styles.choiceLabel}>Vous pouvez répondre</Text>
               {choices.map((choice) => (
                 <Pressable
+                  auditAction="assistant.suggestion.choose"
                   key={choice}
                   accessibilityRole="button"
                   accessibilityLabel={`Utiliser la réponse : ${choice}`}

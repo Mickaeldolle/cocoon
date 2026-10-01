@@ -1,3 +1,4 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
@@ -6,7 +7,6 @@ import {
   KeyboardAvoidingView,
   Modal,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -97,6 +97,7 @@ export default function SecretConversationsScreen() {
         <Text style={styles.title}>Discussions</Text>
         <View style={styles.topbarActions}>
           <Pressable
+            auditAction="protected.press"
             accessibilityRole="button"
             accessibilityLabel="Verrouiller les discussions"
             onPress={() => void lock()}
@@ -106,6 +107,7 @@ export default function SecretConversationsScreen() {
           </Pressable>
           {isSuperadmin ? (
             <Pressable
+              auditAction="protected.press"
               accessibilityRole="button"
               accessibilityLabel="Créer une discussion secrète"
               onPress={() => setOpen(true)}
@@ -134,6 +136,7 @@ export default function SecretConversationsScreen() {
                   <Text style={styles.modalTitle}>Inviter un proche</Text>
                 </View>
                 <Pressable
+                  auditAction="protected.press"
                   accessibilityLabel="Fermer la modale"
                   accessibilityRole="button"
                   onPress={() => setOpen(false)}
@@ -165,6 +168,7 @@ export default function SecretConversationsScreen() {
               <Text style={styles.helper}>Sans nom, le nom de l’invité sera utilisé.</Text>
               {error ? <Text style={styles.formError}>{error}</Text> : null}
               <Pressable
+                auditAction="protected.press"
                 accessibilityRole="button"
                 onPress={() => void createConversation()}
                 style={styles.primary}
@@ -193,6 +197,7 @@ export default function SecretConversationsScreen() {
         {conversations.data?.map((conversation) => (
           <View key={conversation.id} style={styles.row}>
             <Pressable
+              auditAction="protected.press"
               accessibilityRole="button"
               disabled={conversation.membership_status === 'pending'}
               onPress={() =>
@@ -218,6 +223,7 @@ export default function SecretConversationsScreen() {
             {conversation.membership_status === 'pending' ? (
               <View style={styles.actions}>
                 <Pressable
+                  auditAction="protected.press"
                   accessibilityRole="button"
                   disabled={pendingInvitationId !== null}
                   onPress={() => {
@@ -248,6 +254,7 @@ export default function SecretConversationsScreen() {
                   <Text style={styles.acceptText}>Accepter</Text>
                 </Pressable>
                 <Pressable
+                  auditAction="protected.press"
                   accessibilityRole="button"
                   disabled={pendingInvitationId !== null}
                   onPress={() => {

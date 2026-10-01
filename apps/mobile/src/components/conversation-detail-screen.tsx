@@ -1,3 +1,4 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
 import {
@@ -16,7 +17,6 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -441,6 +441,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
       >
         <View style={styles.header}>
           <Pressable
+            auditAction={secret ? 'protected.press' : 'conversation.back'}
             accessibilityLabel={
               secret
                 ? user?.is_superadmin
@@ -538,6 +539,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
                     {mine ? (
                       local?.delivery === 'failed' ? (
                         <Pressable
+                          auditAction={secret ? 'protected.press' : 'conversation.message.retry'}
                           accessibilityLabel="Message non envoyé. Réessayer"
                           accessibilityRole="button"
                           onPress={() => retry(local)}
@@ -605,6 +607,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
               </View>
               <View style={styles.voiceActions}>
                 <Pressable
+                  auditAction={secret ? 'protected.press' : 'conversation.voice.discard'}
                   accessibilityLabel="Supprimer le vocal"
                   accessibilityRole="button"
                   disabled={voiceBusy}
@@ -615,6 +618,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
                 </Pressable>
                 {recorderState.isRecording ? (
                   <Pressable
+                    auditAction={secret ? 'protected.press' : 'conversation.voice.finish'}
                     accessibilityRole="button"
                     disabled={voiceBusy}
                     onPress={() => void stopVoice()}
@@ -624,6 +628,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
                   </Pressable>
                 ) : voiceDraft ? (
                   <Pressable
+                    auditAction={secret ? 'protected.press' : 'conversation.voice.play'}
                     accessibilityRole="button"
                     onPress={() => {
                       player.replace(voiceDraft.uri);
@@ -659,6 +664,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
             />
             {!body.trim() ? (
               <Pressable
+                auditAction={secret ? 'protected.press' : 'conversation.voice.record'}
                 accessibilityLabel={
                   recorderState.isRecording
                     ? 'Terminer le vocal'
@@ -695,6 +701,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
               </Pressable>
             ) : (
               <Pressable
+                auditAction={secret ? 'protected.press' : 'conversation.message.send'}
                 accessibilityLabel="Envoyer le message"
                 accessibilityRole="button"
                 onPress={submit}

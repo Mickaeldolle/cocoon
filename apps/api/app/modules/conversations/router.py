@@ -1,12 +1,13 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_session
+from app.modules.audit.service import note_request_details, note_response_details
 from app.modules.auth.dependencies import get_current_user
 from app.modules.auth.models import User
 from app.modules.conversations.models import (
@@ -103,9 +104,11 @@ def list_conversations(
 @router.post("", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
 def create_conversation(
     payload: ConversationCreate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> Conversation:
+    note_request_details(request, member_count=2)
     identifier = (payload.invitee or payload.member_emails[0]).strip()
     users = list(
         session.scalars(
@@ -160,6 +163,7 @@ def create_conversation(
             ConversationMember.user_id == current_user.id,
         )
     )
+    note_response_details(request, resource_type="conversation")
     return conversation_response(conversation, membership)
 
 
@@ -265,12 +269,14 @@ def list_messages(
 def send_message(
     conversation_id: UUID,
     payload: MessageCreate,
+    request: Request,
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> MessageResponse:
     membership = visible_membership_or_not_found(session, conversation_id, current_user.id)
     body = payload.body.strip()
+    note_request_details(request, message_length=len(body))
     if payload.client_message_id is not None:
         existing = session.get(Message, payload.client_message_id)
         if existing is not None:
@@ -315,4 +321,5 @@ def send_message(
             "message": message_response(message, [membership]).model_dump(mode="json"),
         },
     )
+    note_response_details(request, resource_type="message")
     return message_response(message, [membership])

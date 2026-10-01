@@ -1,15 +1,8 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, familySpacesApi } from '@/src/services/api';
@@ -64,7 +57,12 @@ export default function SpacesScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+        <Pressable
+          auditAction="spaces.back"
+          accessibilityRole="button"
+          onPress={() => router.back()}
+          style={styles.back}
+        >
           <Text style={styles.backText}>‹ Accueil</Text>
         </Pressable>
         <Text style={styles.kicker}>VOS LIENS</Text>
@@ -73,6 +71,7 @@ export default function SpacesScreen() {
           Chaque espace réunit les proches qui partagent les mêmes nouvelles.
         </Text>
         <Pressable
+          auditAction="spaces.create.toggle"
           accessibilityRole="button"
           onPress={() => setFormOpen((open) => !open)}
           style={styles.primary}
@@ -109,6 +108,7 @@ export default function SpacesScreen() {
               </Text>
             ) : null}
             <Pressable
+              auditAction="spaces.create.submit"
               accessibilityRole="button"
               disabled={create.isPending}
               onPress={submit}
@@ -138,6 +138,7 @@ export default function SpacesScreen() {
         ) : null}
         {spaces.data?.map((space) => (
           <Pressable
+            auditAction="spaces.open"
             key={space.id}
             accessibilityRole="button"
             onPress={() => router.push(`/space/${space.id}` as never)}

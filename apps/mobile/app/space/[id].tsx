@@ -1,15 +1,8 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ApiError, familySpacesApi, type FamilyRole } from '@/src/services/api';
@@ -45,7 +38,12 @@ export default function SpaceDetailScreen() {
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+        <Pressable
+          auditAction="space.back"
+          accessibilityRole="button"
+          onPress={() => router.back()}
+          style={styles.back}
+        >
           <Text style={styles.backText}>‹ Espaces</Text>
         </Pressable>
         {space.isPending ? (
@@ -88,6 +86,7 @@ export default function SpaceDetailScreen() {
                 <View style={styles.roles}>
                   {(['MEMBER', 'ADMIN'] as FamilyRole[]).map((candidate) => (
                     <Pressable
+                      auditAction="space.role.select"
                       key={candidate}
                       accessibilityRole="button"
                       onPress={() => setRole(candidate)}
@@ -107,6 +106,7 @@ export default function SpaceDetailScreen() {
                   </Text>
                 ) : null}
                 <Pressable
+                  auditAction="space.member.add"
                   accessibilityRole="button"
                   disabled={addMember.isPending}
                   onPress={() => {

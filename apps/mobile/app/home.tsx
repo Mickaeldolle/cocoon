@@ -1,15 +1,8 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { neuralApi, secretApi } from '@/src/services/api';
 import {
@@ -225,6 +218,7 @@ export default function HomeScreen() {
             </View>
             <View style={styles.topActions}>
               <Pressable
+                auditAction="home.notifications.open"
                 accessibilityRole="button"
                 accessibilityLabel="Ouvrir mes rappels"
                 onPress={() => router.push('/notifications' as never)}
@@ -233,6 +227,7 @@ export default function HomeScreen() {
                 <Text style={styles.profileText}>◷</Text>
               </Pressable>
               <Pressable
+                auditAction="home.profile.open"
                 accessibilityRole="button"
                 accessibilityLabel="Ouvrir mon profil"
                 onPress={() => router.push('/profile')}
@@ -279,6 +274,7 @@ export default function HomeScreen() {
           </View>
           {capture.isPending ? (
             <Pressable
+              auditAction="home.capture.cancel"
               accessibilityRole="button"
               accessibilityLabel="Annuler la capture"
               onPress={() => void cancelCapture()}
@@ -303,6 +299,7 @@ export default function HomeScreen() {
               </Text>
               <Text style={styles.emptyText}>Vérifiez la connexion puis réessayez.</Text>
               <Pressable
+                auditAction="home.retry"
                 accessibilityRole="button"
                 accessibilityLabel="Réessayer le chargement de l’accueil"
                 onPress={() => void home.refetch()}
@@ -329,6 +326,7 @@ export default function HomeScreen() {
               {signal.proposal_id ? (
                 <View style={styles.proposalActions}>
                   <Pressable
+                    auditAction="home.proposal.confirm"
                     accessibilityRole="button"
                     disabled={confirm.isPending || cancelProposal.isPending}
                     onPress={() =>
@@ -342,6 +340,7 @@ export default function HomeScreen() {
                     <Text style={styles.confirmText}>Confirmer</Text>
                   </Pressable>
                   <Pressable
+                    auditAction="home.proposal.dismiss"
                     accessibilityRole="button"
                     disabled={confirm.isPending || cancelProposal.isPending}
                     onPress={() => cancelProposal.mutate(signal.proposal_id!)}

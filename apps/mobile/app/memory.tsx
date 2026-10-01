@@ -1,10 +1,11 @@
+import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
+import { reportButtonPress } from '@/src/services/ui-audit';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -69,15 +70,31 @@ export default function MemoryScreen() {
       'Oublier cette mémoire ?',
       'Elle ne sera plus utilisée dans les prochains contextes.',
       [
-        { text: 'Annuler', style: 'cancel' },
-        { text: 'Oublier', style: 'destructive', onPress: () => forget.mutate(memory.id) },
+        {
+          text: 'Annuler',
+          style: 'cancel',
+          onPress: () => reportButtonPress('memory.forget.cancel'),
+        },
+        {
+          text: 'Oublier',
+          style: 'destructive',
+          onPress: () => {
+            reportButtonPress('memory.forget.confirm');
+            forget.mutate(memory.id);
+          },
+        },
       ],
     );
   };
   return (
     <SafeAreaView style={styles.screen}>
       <ScrollView contentContainerStyle={styles.content}>
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}>
+        <Pressable
+          auditAction="memory.back"
+          accessibilityRole="button"
+          onPress={() => router.back()}
+          style={styles.back}
+        >
           <Text style={styles.backText}>‹ Profil</Text>
         </Pressable>
         <Text style={styles.kicker}>MÉMOIRE PERSONNELLE</Text>
@@ -97,7 +114,11 @@ export default function MemoryScreen() {
         {memories.isError ? (
           <View style={styles.alert}>
             <Text style={styles.alertTitle}>La mémoire ne peut pas être chargée.</Text>
-            <Pressable onPress={() => void memories.refetch()} style={styles.retry}>
+            <Pressable
+              auditAction="memory.retry"
+              onPress={() => void memories.refetch()}
+              style={styles.retry}
+            >
               <Text style={styles.retryText}>Réessayer</Text>
             </Pressable>
           </View>
@@ -135,6 +156,7 @@ export default function MemoryScreen() {
               <View style={styles.actions}>
                 {isEditing ? (
                   <Pressable
+                    auditAction="memory.edit.save"
                     accessibilityRole="button"
                     disabled={!draft.trim() || update.isPending}
                     onPress={() =>
@@ -150,6 +172,7 @@ export default function MemoryScreen() {
                   </Pressable>
                 ) : (
                   <Pressable
+                    auditAction="memory.edit.open"
                     accessibilityRole="button"
                     onPress={() => beginEdit(memory)}
                     style={styles.secondary}
@@ -158,6 +181,7 @@ export default function MemoryScreen() {
                   </Pressable>
                 )}
                 <Pressable
+                  auditAction="memory.forget.prompt"
                   accessibilityRole="button"
                   disabled={forget.isPending}
                   onPress={() => askForget(memory)}
