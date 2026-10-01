@@ -214,6 +214,7 @@ def test_message_body_and_invitee_are_excluded_from_json_details(client: TestCli
 
 
 def test_forwarded_ip_is_used_only_for_a_trusted_peer(monkeypatch) -> None:
+    monkeypatch.delenv("VERCEL", raising=False)
     request = Request(
         {
             "type": "http",
@@ -226,6 +227,36 @@ def test_forwarded_ip_is_used_only_for_a_trusted_peer(monkeypatch) -> None:
     assert client_ip(request) == ("10.0.0.2", "peer")
     monkeypatch.setattr(get_settings(), "audit_trusted_proxy_cidrs", ["10.0.0.0/8"])
     assert client_ip(request) == ("198.51.100.7", "forwarded")
+
+
+def test_vercel_client_ip_uses_only_the_platform_header(monkeypatch) -> None:
+    request = Request(
+        {
+            "type": "http",
+            "client": ("10.0.0.2", 1234),
+            "headers": [
+                (b"x-forwarded-for", b"198.51.100.7"),
+                (b"x-vercel-forwarded-for", b"203.0.113.9"),
+            ],
+            "query_string": b"",
+        }
+    )
+    monkeypatch.setattr(get_settings(), "audit_trusted_proxy_cidrs", [])
+    monkeypatch.delenv("VERCEL", raising=False)
+    assert client_ip(request) == ("10.0.0.2", "peer")
+    monkeypatch.setenv("VERCEL", "1")
+    assert client_ip(request) == ("203.0.113.9", "vercel")
+    request.scope["client"] = None
+    assert client_ip(request) == ("203.0.113.9", "vercel")
+    invalid = Request(
+        {
+            "type": "http",
+            "client": ("10.0.0.2", 1234),
+            "headers": [(b"x-vercel-forwarded-for", b"not-an-ip")],
+            "query_string": b"",
+        }
+    )
+    assert client_ip(invalid) == ("10.0.0.2", "peer")
 
 
 def test_audit_stores_direct_ip_and_ignores_untrusted_forwarded_header(client: TestClient) -> None:

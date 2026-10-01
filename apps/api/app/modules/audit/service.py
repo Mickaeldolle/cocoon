@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import ipaddress
 import logging
+import os
 from uuid import UUID
 
 from fastapi import Request, Response
@@ -140,6 +141,14 @@ def event_action(method: str, route: str | None) -> str | None:
 
 
 def client_ip(request: Request) -> tuple[str | None, str | None]:
+    # Vercel's edge sets this header for the API Function. Never trust it elsewhere.
+    if os.environ.get("VERCEL") == "1":
+        forwarded_by_vercel = request.headers.get("x-vercel-forwarded-for", "")
+        try:
+            if forwarded_by_vercel:
+                return str(ipaddress.ip_address(forwarded_by_vercel.strip())), "vercel"
+        except ValueError:
+            pass
     peer = request.client.host if request.client is not None else None
     try:
         peer_address = ipaddress.ip_address(peer) if peer else None
