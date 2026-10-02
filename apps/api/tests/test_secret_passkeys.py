@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from uuid import UUID
 
 import cbor2
 from cryptography.hazmat.primitives import hashes
@@ -80,11 +81,13 @@ def assertion_response(
     *,
     origin: str = ORIGIN,
     user_verified: bool = True,
+    user_handle: bytes | None = None,
+    sign_count: int = 1,
 ) -> dict:
     credential_id = b"test-passkey-id-unique-12345"
     encoded_id = bytes_to_base64url(credential_id)
     flags = b"\x05" if user_verified else b"\x01"
-    auth_data = hashlib.sha256(RP_ID.encode()).digest() + flags + (1).to_bytes(4)
+    auth_data = hashlib.sha256(RP_ID.encode()).digest() + flags + sign_count.to_bytes(4)
     data = client_data("webauthn.get", challenge, origin)
     signature = private_key.sign(
         auth_data + hashlib.sha256(data).digest(), ec.ECDSA(hashes.SHA256())
@@ -97,7 +100,7 @@ def assertion_response(
             "authenticatorData": bytes_to_base64url(auth_data),
             "clientDataJSON": bytes_to_base64url(data),
             "signature": bytes_to_base64url(signature),
-            "userHandle": None,
+            "userHandle": bytes_to_base64url(user_handle) if user_handle else None,
         },
         "clientExtensionResults": {},
     }
@@ -355,6 +358,57 @@ def test_registered_passkey_can_open_an_account_session(client: TestClient, monk
         )
         assert registered.status_code == 200, registered.text
 
+        user_id = UUID(client.get("/api/auth/me", headers=headers).json()["id"])
+        discoverable = client.post("/api/auth/passkeys/login/options", json={}).json()
+        assert discoverable["options"]["allowCredentials"] == []
+        anonymous_payload = {
+            "challenge_id": discoverable["challenge_id"],
+            "credential": assertion_response(
+                discoverable["options"]["challenge"], private_key, user_handle=user_id.bytes
+            ),
+            "installation_id": "install-discoverable-passkey-123",
+            "name": "Navigateur de test",
+            "platform": "web",
+        }
+        anonymous_login = client.post("/api/auth/passkeys/login/verify", json=anonymous_payload)
+        assert anonymous_login.status_code == 200, anonymous_login.text
+        assert (
+            client.post("/api/auth/passkeys/login/verify", json=anonymous_payload).status_code
+            == 401
+        )
+
+        mismatched = client.post("/api/auth/passkeys/login/options", json={}).json()
+        assert (
+            client.post(
+                "/api/auth/passkeys/login/verify",
+                json={
+                    **anonymous_payload,
+                    "challenge_id": mismatched["challenge_id"],
+                    "credential": assertion_response(
+                        mismatched["options"]["challenge"],
+                        private_key,
+                        user_handle=UUID("00000000-0000-0000-0000-000000000001").bytes,
+                    ),
+                },
+            ).status_code
+            == 401
+        )
+
+        missing_handle = client.post("/api/auth/passkeys/login/options", json={}).json()
+        assert (
+            client.post(
+                "/api/auth/passkeys/login/verify",
+                json={
+                    **anonymous_payload,
+                    "challenge_id": missing_handle["challenge_id"],
+                    "credential": assertion_response(
+                        missing_handle["options"]["challenge"], private_key
+                    ),
+                },
+            ).status_code
+            == 401
+        )
+
         options = client.post(
             "/api/auth/passkeys/login/options", json={"email": "login-passkey@example.com"}
         )
@@ -363,7 +417,9 @@ def test_registered_passkey_can_open_an_account_session(client: TestClient, monk
         assert ceremony["options"]["userVerification"] == "required"
         payload = {
             "challenge_id": ceremony["challenge_id"],
-            "credential": assertion_response(ceremony["options"]["challenge"], private_key),
+            "credential": assertion_response(
+                ceremony["options"]["challenge"], private_key, sign_count=2
+            ),
             "installation_id": "install-login-passkey-second-123",
             "name": "Navigateur de test",
             "platform": "web",

@@ -125,9 +125,14 @@ def passkey_login_options(
     request: Request,
     session: Session = Depends(get_session),
 ) -> dict:
-    request.state.audit_attempted_identity_ref = attempted_identity_reference(payload.email)
+    if payload.email is not None:
+        request.state.audit_attempted_identity_ref = attempted_identity_reference(payload.email)
     origin, rp_id = require_webauthn_relying_party()
-    user = session.scalar(select(User).where(User.email == payload.email.lower(), User.is_active))
+    user = (
+        session.scalar(select(User).where(User.email == payload.email.lower(), User.is_active))
+        if payload.email is not None
+        else None
+    )
     credentials = (
         session.scalars(
             select(SecretPasskey).where(
@@ -139,9 +144,9 @@ def passkey_login_options(
     )
     # A dummy descriptor keeps an unknown account and an account without a passkey
     # on the same browser path. Neither can complete verification.
-    descriptors = [
-        PublicKeyCredentialDescriptor(id=item.credential_id) for item in credentials
-    ] or [PublicKeyCredentialDescriptor(id=token_bytes(32))]
+    descriptors = [PublicKeyCredentialDescriptor(id=item.credential_id) for item in credentials]
+    if payload.email is not None and not descriptors:
+        descriptors = [PublicKeyCredentialDescriptor(id=token_bytes(32))]
     options = generate_authentication_options(
         rp_id=rp_id,
         allow_credentials=descriptors,
@@ -151,6 +156,7 @@ def passkey_login_options(
     session.execute(delete(PasskeyLoginChallenge).where(PasskeyLoginChallenge.expires_at <= now))
     pending = PasskeyLoginChallenge(
         user_id=user.id if credentials and user is not None else None,
+        discoverable=payload.email is None,
         challenge=options.challenge,
         origin=origin,
         rp_id=rp_id,
@@ -179,10 +185,14 @@ def passkey_login_verify(
             PasskeyLoginChallenge.rp_id == rp_id,
             PasskeyLoginChallenge.expires_at > datetime.now(UTC),
         )
-        .returning(PasskeyLoginChallenge.user_id, PasskeyLoginChallenge.challenge)
+        .returning(
+            PasskeyLoginChallenge.user_id,
+            PasskeyLoginChallenge.discoverable,
+            PasskeyLoginChallenge.challenge,
+        )
     ).first()
     session.commit()
-    if consumed is None or consumed.user_id is None:
+    if consumed is None or (consumed.user_id is None and not consumed.discoverable):
         raise HTTPException(status_code=401, detail="Passkey non validée.")
     credential = checked_credential(payload.credential)
     encoded_id = credential.get("id")
@@ -195,15 +205,26 @@ def passkey_login_verify(
     stored = session.scalar(
         select(SecretPasskey)
         .where(
-            SecretPasskey.user_id == consumed.user_id,
             SecretPasskey.rp_id == rp_id,
             SecretPasskey.credential_id == credential_id,
         )
         .with_for_update()
     )
-    user = session.get(User, consumed.user_id)
+    user = session.get(User, stored.user_id) if stored is not None else None
+    if consumed.user_id is not None and (stored is None or stored.user_id != consumed.user_id):
+        raise HTTPException(status_code=401, detail="Passkey non validée.")
     if stored is None or user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Passkey non validée.")
+    user_handle = credential.get("response", {}).get("userHandle")
+    if consumed.discoverable and not isinstance(user_handle, str):
+        raise HTTPException(status_code=401, detail="Passkey non validée.")
+    if isinstance(user_handle, str):
+        try:
+            decoded_handle = base64url_to_bytes(user_handle)
+        except Exception as error:
+            raise HTTPException(status_code=401, detail="Passkey non validée.") from error
+        if decoded_handle != user.id.bytes:
+            raise HTTPException(status_code=401, detail="Passkey non validée.")
     try:
         verified = verify_authentication_response(
             credential=credential,

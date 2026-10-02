@@ -1,5 +1,5 @@
 import { Link, router } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -24,6 +24,9 @@ export default function SignInScreen() {
   const [error, setError] = useState<string | null>(null);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const start = useSessionStore((state) => state.start);
+  const sessionExpired = useSessionStore((state) => state.sessionExpired);
+  const automaticPasskeyStarted = useRef(false);
+  const automaticBiometricStarted = useRef(false);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -52,26 +55,27 @@ export default function SignInScreen() {
     }
   }
 
-  async function signInWithPasskey(email: string) {
-    if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
-      setError('Saisissez votre adresse email avant d’utiliser une passkey.');
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const tokens = await loginWithWebPasskey(email.trim());
-      await start(tokens);
-      router.replace('/home');
-    } catch (caught) {
-      console.error(caught);
-      setError(caught instanceof Error ? caught.message : 'Connexion par passkey impossible.');
-    } finally {
-      setBusy(false);
-    }
-  }
+  const signInWithPasskey = useCallback(
+    async (automatic = false) => {
+      if (busy) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const tokens = await loginWithWebPasskey();
+        await start(tokens);
+        router.replace('/home');
+      } catch (caught) {
+        if (!automatic) {
+          setError(caught instanceof Error ? caught.message : 'Connexion par passkey impossible.');
+        }
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, start],
+  );
 
-  async function signInWithBiometrics() {
+  const signInWithBiometrics = useCallback(async () => {
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -101,7 +105,25 @@ export default function SignInScreen() {
     } finally {
       setBusy(false);
     }
-  }
+  }, [busy, start]);
+
+  useEffect(() => {
+    if (
+      Platform.OS !== 'web' ||
+      !sessionExpired ||
+      automaticPasskeyStarted.current ||
+      !webPasskeysSupported()
+    )
+      return;
+    automaticPasskeyStarted.current = true;
+    void signInWithPasskey(true);
+  }, [sessionExpired, signInWithPasskey]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !biometricEnabled || automaticBiometricStarted.current) return;
+    automaticBiometricStarted.current = true;
+    void signInWithBiometrics();
+  }, [biometricEnabled, signInWithBiometrics]);
 
   return (
     <SafeAreaView style={styles.screen}>
@@ -114,7 +136,7 @@ export default function SignInScreen() {
           busy={busy}
           error={error}
           onSubmit={signIn}
-          onPasskey={Platform.OS === 'web' ? signInWithPasskey : undefined}
+          onPasskey={Platform.OS === 'web' ? () => signInWithPasskey() : undefined}
           passkeyAvailable={webPasskeysSupported()}
           onBiometric={biometricEnabled ? signInWithBiometrics : undefined}
         />

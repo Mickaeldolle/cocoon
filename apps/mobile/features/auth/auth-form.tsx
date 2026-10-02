@@ -21,7 +21,7 @@ type Props = {
   error: string | null;
   showDisplayName?: boolean;
   onSubmit: (credentials: Credentials) => Promise<void>;
-  onPasskey?: (email: string) => Promise<void>;
+  onPasskey?: () => Promise<void>;
   passkeyAvailable?: boolean;
   onBiometric?: () => Promise<void>;
 };
@@ -39,7 +39,6 @@ export function AuthForm({
   const [passwordVisible, setPasswordVisible] = useState(false);
   const {
     control,
-    getValues,
     handleSubmit,
     formState: { errors },
   } = useForm<Credentials>({
@@ -163,7 +162,7 @@ export function AuthForm({
               auditAction="auth.passkey"
               accessibilityRole="button"
               disabled={busy}
-              onPress={() => void onPasskey(getValues('email'))}
+              onPress={() => void onPasskey()}
               style={[styles.passkey, busy && styles.submitBusy]}
             >
               <Text style={styles.passkeyText}>Se connecter avec une passkey</Text>

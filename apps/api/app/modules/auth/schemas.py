@@ -23,7 +23,7 @@ class LoginRequest(DeviceInput):
 
 
 class PasskeyLoginOptionsRequest(BaseModel):
-    email: EmailStr
+    email: EmailStr | None = None
 
 
 class PasskeyLoginVerifyRequest(DeviceInput):

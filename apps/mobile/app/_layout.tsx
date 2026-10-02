@@ -31,6 +31,7 @@ export default function RootLayout() {
   const secretExpiresAt = useSecretAccessStore((state) => state.expiresAt);
   const clearSecretAccess = useSecretAccessStore((state) => state.clear);
   const restoreSession = useSessionStore((state) => state.restore);
+  const refreshUser = useSessionStore((state) => state.refreshUser);
   const sessionRestoreStarted = useRef(false);
   const previousUserId = useRef<string | null | undefined>(undefined);
   useEffect(() => {
@@ -41,6 +42,16 @@ export default function RootLayout() {
   useEffect(() => {
     void restoreTheme();
   }, [restoreTheme]);
+  useEffect(() => {
+    let previousState = AppState.currentState;
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (previousState !== 'active' && nextState === 'active' && accessToken) {
+        void refreshUser().catch(() => undefined);
+      }
+      previousState = nextState;
+    });
+    return () => subscription.remove();
+  }, [accessToken, refreshUser]);
   useEffect(() => {
     if (
       sessionInitialized &&

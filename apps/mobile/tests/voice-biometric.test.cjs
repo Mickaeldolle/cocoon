@@ -27,6 +27,7 @@ function load(relativePath, mocks = {}, globals = {}) {
       setTimeout,
       clearTimeout,
       AbortController,
+      Headers,
       Error,
       URL,
       process,
@@ -81,6 +82,66 @@ test('API calls use one separator when the configured URL ends with a slash', as
   assert.deepEqual(urls, ['https://api.example.com/api/auth/register']);
 });
 
+test('expired access token is renewed and the request is retried once', async () => {
+  const tokens = [];
+  const api = load(
+    'src/services/api.ts',
+    {
+      'expo-file-system': { File: class {} },
+      'expo-secure-store': {},
+      'expo/fetch': { fetch: async () => assert.fail('Unexpected streaming request') },
+      'react-native': { Platform: { OS: 'web' } },
+    },
+    {
+      Headers,
+      fetch: async (_url, options) => {
+        const token = new Headers(options.headers).get('Authorization');
+        tokens.push(token);
+        return token === 'Bearer fresh'
+          ? { ok: true, status: 200, json: async () => ({ id: 'user' }) }
+          : {
+              ok: false,
+              status: 401,
+              json: async () => ({ detail: 'Session invalide ou expirée.' }),
+            };
+      },
+      process: { env: { EXPO_PUBLIC_API_URL: 'https://api.example.com' } },
+    },
+  );
+  let renewals = 0;
+  api.setAccessTokenRenewer(async (expired) => {
+    assert.equal(expired, 'expired');
+    renewals += 1;
+    return 'fresh';
+  });
+
+  assert.deepEqual(await api.authApi.me('expired'), { id: 'user' });
+  assert.deepEqual(tokens, ['Bearer expired', 'Bearer fresh']);
+  assert.equal(renewals, 1);
+});
+
+test('passkey login challenge does not require an email address', async () => {
+  let body;
+  const { authApi } = load(
+    'src/services/api.ts',
+    {
+      'expo-file-system': { File: class {} },
+      'expo-secure-store': {},
+      'expo/fetch': { fetch: async () => assert.fail('Unexpected streaming request') },
+      'react-native': { Platform: { OS: 'web' } },
+    },
+    {
+      fetch: async (_url, options) => {
+        body = options.body;
+        return { ok: true, status: 200, json: async () => ({ challenge_id: 'test' }) };
+      },
+      process: { env: { EXPO_PUBLIC_API_URL: 'https://api.example.com' } },
+    },
+  );
+  await authApi.passkeyLoginOptions();
+  assert.equal(body, '{}');
+});
+
 test('native audio is read through File and only API URLs use fetch', async () => {
   const urls = [];
   const bytes = new Uint8Array([1, 2, 3]).buffer;
@@ -98,7 +159,7 @@ test('native audio is read through File and only API URLs use fetch', async () =
     urls.push(url);
     if (url.endsWith('/transcriptions')) {
       assert.equal(options.body, bytes);
-      assert.equal(options.headers['Content-Type'], 'audio/mp4');
+      assert.equal(new Headers(options.headers).get('Content-Type'), 'audio/mp4');
     }
     return { ok: true, status: 200, json: async () => ({ text: 'Bonjour' }) };
   });
@@ -353,6 +414,7 @@ test('session bootstrap waits for biometric confirmation before refreshing', asy
         return 'refresh-token';
       },
       clearRefreshToken: async () => undefined,
+      setAccessTokenRenewer: () => undefined,
     },
   }).useSessionStore;
   await store.restore();
@@ -361,16 +423,102 @@ test('session bootstrap waits for biometric confirmation before refreshing', asy
   assert.equal(store.accessToken, null);
 });
 
+test('expired refresh token clears the session for login and passkey recovery', async () => {
+  let state;
+  let cleared = false;
+  class ApiError extends Error {
+    status = 401;
+  }
+  const store = load('src/stores/session-store.ts', {
+    zustand: {
+      create: (initialize) => {
+        state = initialize(
+          (change) => Object.assign(state, change),
+          () => state,
+        );
+        return state;
+      },
+    },
+    '@/src/services/android-biometric-login': {
+      isAndroidBiometricLoginEnabled: async () => false,
+    },
+    '@/src/services/api': {
+      ApiError,
+      loadRefreshToken: async () => 'expired-refresh',
+      clearRefreshToken: async () => {
+        cleared = true;
+      },
+      authApi: {
+        refresh: async () => {
+          throw new ApiError('expired');
+        },
+      },
+      setAccessTokenRenewer: () => undefined,
+    },
+  }).useSessionStore;
+
+  await store.restore();
+  assert.equal(cleared, true);
+  assert.equal(store.initialized, true);
+  assert.equal(store.user, null);
+  assert.equal(store.sessionExpired, true);
+});
+
+test('concurrent expired requests share one refresh token rotation', async () => {
+  let renewer;
+  let refreshes = 0;
+  const store = load('src/stores/session-store.ts', {
+    zustand: {
+      create: (initialize) => {
+        const state = {};
+        Object.assign(
+          state,
+          initialize(
+            (change) => Object.assign(state, change),
+            () => state,
+          ),
+        );
+        state.getState = () => state;
+        state.setState = (change) => Object.assign(state, change);
+        return state;
+      },
+    },
+    '@/src/services/android-biometric-login': {},
+    '@/src/services/api': {
+      ApiError: class ApiError extends Error {},
+      setAccessTokenRenewer: (callback) => {
+        renewer = callback;
+      },
+      loadRefreshToken: async () => 'refresh-old',
+      saveRefreshToken: async () => undefined,
+      authApi: {
+        refresh: async () => {
+          refreshes += 1;
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          return { access_token: 'fresh', refresh_token: 'refresh-fresh' };
+        },
+      },
+    },
+  }).useSessionStore;
+  store.setState({ accessToken: 'expired' });
+
+  assert.deepEqual(await Promise.all([renewer('expired'), renewer('expired')]), ['fresh', 'fresh']);
+  assert.equal(refreshes, 1);
+  assert.equal(store.accessToken, 'fresh');
+  assert.equal(await renewer('token-from-another-session'), null);
+});
+
 test('one button: short tap sends; hold only reports unavailable transcription', () => {
   const calls = [];
   const { VoiceCapture } = load('features/assistant/voice-capture.tsx', {
     react: { useRef: (current) => ({ current }) },
     'react-native': {
-      Pressable: 'button',
       Text: 'span',
       ActivityIndicator: 'progress',
       StyleSheet: { create: (styles) => styles },
     },
+    '@/src/components/audited-pressable': { AuditedPressable: 'button' },
+    '@/src/services/ui-audit': { reportButtonPress: () => undefined },
     '@/src/theme': { darkTheme: { colors: { ink: '#fff' } } },
   });
   const button = VoiceCapture({

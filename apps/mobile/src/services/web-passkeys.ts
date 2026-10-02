@@ -134,9 +134,9 @@ export async function unlockWithWebPasskey(accessToken: string): Promise<SecretA
   });
 }
 
-export async function loginWithWebPasskey(email: string): Promise<TokenPair> {
+export async function loginWithWebPasskey(): Promise<TokenPair> {
   requireWebAuthn();
-  const ceremony = await authApi.passkeyLoginOptions(email);
+  const ceremony = await authApi.passkeyLoginOptions();
   const options = ceremony.options as RequestOptionsJSON;
   const publicKey: PublicKeyCredentialRequestOptions = {
     ...options,

@@ -186,6 +186,7 @@ class PasskeyLoginChallenge(Base):
     user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    discoverable: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     challenge: Mapped[bytes] = mapped_column(LargeBinary)
     origin: Mapped[str] = mapped_column(String(300))
     rp_id: Mapped[str] = mapped_column(String(253))

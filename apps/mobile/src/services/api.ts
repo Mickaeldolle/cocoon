@@ -320,18 +320,33 @@ class ApiError extends Error {
   }
 }
 
-async function call<T>(path: string, options: RequestInit = {}, timeoutMs = 12_000): Promise<T> {
+let renewAccessToken: ((expiredToken: string) => Promise<string | null>) | null = null;
+
+export function setAccessTokenRenewer(
+  renewer: (expiredToken: string) => Promise<string | null>,
+): void {
+  renewAccessToken = renewer;
+}
+
+async function call<T>(
+  path: string,
+  options: RequestInit = {},
+  timeoutMs = 12_000,
+  allowRenewal = true,
+): Promise<T> {
   const controller = new AbortController();
   const abortFromCaller = () => controller.abort();
   if (options.signal?.aborted) controller.abort();
   options.signal?.addEventListener('abort', abortFromCaller, { once: true });
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const requestHeaders = new Headers(options.headers);
+  if (!requestHeaders.has('Content-Type')) requestHeaders.set('Content-Type', 'application/json');
   let response: Response;
   try {
     response = await fetch(`${apiUrl}${path}`, {
       ...options,
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json', ...options.headers },
+      headers: requestHeaders,
     });
   } catch (error) {
     if (controller.signal.aborted) {
@@ -352,6 +367,21 @@ async function call<T>(path: string, options: RequestInit = {}, timeoutMs = 12_0
       typeof body === 'object' && body && 'detail' in body
         ? String(body.detail)
         : 'Une erreur est survenue.';
+    const authorization = new Headers(options.headers).get('Authorization');
+    if (
+      allowRenewal &&
+      response.status === 401 &&
+      detail.startsWith('Session invalide') &&
+      authorization?.startsWith('Bearer ') &&
+      renewAccessToken
+    ) {
+      const token = await renewAccessToken(authorization.slice('Bearer '.length));
+      if (token) {
+        const headers = new Headers(options.headers);
+        headers.set('Authorization', `Bearer ${token}`);
+        return call<T>(path, { ...options, headers }, timeoutMs, false);
+      }
+    }
     throw new ApiError(response.status, detail);
   }
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
@@ -385,10 +415,10 @@ export const authApi = {
     call<TokenPair>('/api/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
   login: (payload: DeviceInput & { email: string; password: string }) =>
     call<TokenPair>('/api/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
-  passkeyLoginOptions: (email: string) =>
+  passkeyLoginOptions: (email?: string) =>
     call<SecretPasskeyCeremony>('/api/auth/passkeys/login/options', {
       method: 'POST',
-      body: JSON.stringify({ email }),
+      body: JSON.stringify(email ? { email } : {}),
     }),
   verifyPasskeyLogin: (
     challengeId: string,
