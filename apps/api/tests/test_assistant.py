@@ -21,6 +21,7 @@ from app.modules.assistant.models import (
 )
 from app.modules.assistant.rate_limit import AssistantRateLimiter
 from app.modules.assistant.router import create_voice_transcription
+from app.modules.auth.models import User
 from app.modules.neural.models import MemoryItem, MemoryLayer
 from app.modules.personal.models import GroceryItem, PersonalTask, TrainingSession
 
@@ -67,8 +68,17 @@ def register_payload() -> dict[str, object]:
     }
 
 
+def enable_assistant_for(client: TestClient, email: str) -> None:
+    with client.app.state.test_session_factory() as session:
+        user = session.scalar(select(User).where(User.email == email))
+        assert user is not None
+        user.enable_assistant = True
+        session.commit()
+
+
 def authenticated_headers(client: TestClient) -> dict[str, str]:
     tokens = client.post("/api/auth/register", json=register_payload()).json()
+    enable_assistant_for(client, "marie@example.com")
     return {"Authorization": f"Bearer {tokens['access_token']}"}
 
 
@@ -102,6 +112,12 @@ def test_generation_route_limits_each_user(
     other = register_payload()
     other["email"] = "autre@example.com"
     token = client.post("/api/auth/register", json=other).json()["access_token"]
+    with client.app.state.test_session_factory() as session:
+        user = session.scalar(select(User).where(User.email == "autre@example.com"))
+        assert user is not None
+        user.enable_assistant = True
+        session.commit()
+    enable_assistant_for(client, "autre@example.com")
     assert client.post(
         "/api/assistant/organize",
         headers={"Authorization": f"Bearer {token}"},
@@ -246,6 +262,12 @@ def test_small_agent_harness_never_shares_memories_between_users(
             "installation_id": "agent-isolation-device",
         },
     ).json()
+    with client.app.state.test_session_factory() as session:
+        user = session.scalar(select(User).where(User.email == "agent-isolation@example.com"))
+        assert user is not None
+        user.enable_assistant = True
+        session.commit()
+    enable_assistant_for(client, "agent-isolation@example.com")
     assert (
         client.post(
             "/api/assistant/chat",
@@ -339,6 +361,77 @@ def test_streaming_chat_accepts_plain_text_from_model(
     assert response.status_code == 200
     assert 'event: delta\ndata: {"text": "Bonjour"}' in response.text
     assert '"content": "Bonjour !"' in response.text
+
+
+def test_streaming_chat_retries_failed_turn_without_duplicate_user_message(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contexts: list[list[dict[str, str]]] = []
+
+    def model(messages: list[dict[str, str]], **_kwargs):
+        contexts.append(json.loads(messages[-1]["content"])["recent_conversation"])
+        return iter([] if len(contexts) == 1 else ["Bonjour !"])
+
+    monkeypatch.setattr(assistant_service, "llm_stream", model)
+    auth = authenticated_headers(client)
+    headers = {**auth, "X-Assistant-Idempotency-Key": "stream-retry-1"}
+    first = client.post(
+        "/api/assistant/chat/stream", headers=headers, json={"text": "Bonjour"}
+    )
+    assert "event: error" in first.text
+    failed_history = client.get("/api/assistant/history", headers=auth).json()["messages"]
+    assert len(failed_history) == 1
+    assert failed_history[0]["idempotency_key"] == "stream-retry-1"
+
+    repeated = client.post(
+        "/api/assistant/chat/stream", headers=headers, json={"text": "Bonjour"}
+    )
+    assert repeated.status_code == 409
+    mismatch = client.post(
+        "/api/assistant/chat/stream", headers=headers,
+        json={"text": "Autre message", "retry": True},
+    )
+    assert mismatch.status_code == 409
+
+    retried = client.post(
+        "/api/assistant/chat/stream", headers=headers,
+        json={"text": "Bonjour", "retry": True},
+    )
+    assert "event: complete" in retried.text
+    assert contexts == [[], []]
+    history = client.get("/api/assistant/history", headers=auth).json()["messages"]
+    assert [message["content"] for message in history] == ["Bonjour", "Bonjour !"]
+
+
+def test_streaming_retry_does_not_replay_a_later_turn(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replies = iter([[], ["Réponse deux"], ["Réponse un"]])
+    monkeypatch.setattr(
+        assistant_service, "llm_stream", lambda _messages, **_kwargs: iter(next(replies))
+    )
+    auth = authenticated_headers(client)
+    first_headers = {**auth, "X-Assistant-Idempotency-Key": "first-failed-turn"}
+    second_headers = {**auth, "X-Assistant-Idempotency-Key": "second-turn"}
+
+    first = client.post(
+        "/api/assistant/chat/stream", headers=first_headers, json={"text": "Question un"}
+    )
+    second = client.post(
+        "/api/assistant/chat/stream", headers=second_headers, json={"text": "Question deux"}
+    )
+    retried = client.post(
+        "/api/assistant/chat/stream", headers=first_headers,
+        json={"text": "Question un", "retry": True},
+    )
+
+    assert "event: error" in first.text
+    assert '"content": "Réponse deux"' in second.text
+    assert '"content": "Réponse un"' in retried.text
+    history = client.get("/api/assistant/history", headers=auth).json()["messages"]
+    assert [message["content"] for message in history] == [
+        "Question un", "Question deux", "Réponse deux", "Réponse un"
+    ]
 
 
 def test_chat_creates_confirmable_memory_proposals(

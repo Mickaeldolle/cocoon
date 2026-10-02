@@ -111,4 +111,5 @@ class UserResponse(BaseModel):
     email: EmailStr
     display_name: str
     is_superadmin: bool
+    enable_assistant: bool
     created_at: datetime

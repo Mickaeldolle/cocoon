@@ -36,6 +36,7 @@ export type CurrentUser = {
   email: string;
   display_name: string;
   is_superadmin: boolean;
+  enable_assistant: boolean;
   created_at: string;
 };
 
@@ -129,6 +130,7 @@ export type AssistantMessage = {
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
+  idempotency_key?: string | null;
   proposals: AssistantProposal[];
 };
 
@@ -332,13 +334,13 @@ async function call<T>(path: string, options: RequestInit = {}, timeoutMs = 12_0
       headers: { 'Content-Type': 'application/json', ...options.headers },
     });
   } catch (error) {
-    console.error(error);
     if (controller.signal.aborted) {
       throw new ApiError(
         0,
         'Le service Cocoon ne répond pas. Vérifiez la connexion puis réessayez.',
       );
     }
+    console.error(error);
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -675,6 +677,7 @@ export const assistantApi = {
     handlers: AssistantStreamHandlers = {},
     signal?: AbortSignal,
     idempotencyKey?: string,
+    retry = false,
   ): Promise<AssistantChat> => {
     const response = await expoFetch(`${apiUrl}/api/assistant/chat/stream`, {
       method: 'POST',
@@ -684,7 +687,7 @@ export const assistantApi = {
         Authorization: `Bearer ${accessToken}`,
         ...(idempotencyKey ? { 'X-Assistant-Idempotency-Key': idempotencyKey } : {}),
       },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, retry }),
     });
     if (!response.ok || !response.body) {
       const body: unknown = await response.json().catch(() => null);

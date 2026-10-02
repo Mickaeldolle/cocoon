@@ -85,16 +85,34 @@ from app.modules.assistant.service import (
 from app.modules.assistant.voice import MAX_VOICE_BYTES, SUPPORTED_AUDIO_TYPES, transcribe_audio
 from app.modules.audit.service import note_request_details
 from app.modules.auth.consents import require_active_consent
-from app.modules.auth.dependencies import get_current_user
+from app.modules.auth.dependencies import get_current_user, require_assistant_enabled
 from app.modules.auth.models import User
 from app.modules.memory.context import accessible_memory_summary_keys
 from app.modules.personal.models import PersonalTask
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
+_active_stream_turns: set[tuple[UUID, str]] = set()
+_active_stream_turns_lock = threading.Lock()
+
+
+def _claim_stream_turn(thread_id: UUID, key: str) -> None:
+    with _active_stream_turns_lock:
+        claim = (thread_id, key)
+        if claim in _active_stream_turns:
+            raise HTTPException(
+                status_code=409, detail="Ce tour assistant est déjà en cours de traitement."
+            )
+        _active_stream_turns.add(claim)
+
+
+def _release_stream_turn(thread_id: UUID, key: str | None) -> None:
+    if key is not None:
+        with _active_stream_turns_lock:
+            _active_stream_turns.discard((thread_id, key))
 
 
 def enforce_generation_rate_limit(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_assistant_enabled),
 ) -> None:
     if not assistant_rate_limiter.allow(
         current_user.id, get_settings().assistant_requests_per_minute
@@ -107,7 +125,7 @@ def enforce_generation_rate_limit(
 
 @router.get("/status")
 async def assistant_status(
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_assistant_enabled),
 ) -> dict[str, str | bool]:
     """Private model availability; no URL or credentials in the response."""
     return await run_in_threadpool(LLMService().status)
@@ -116,7 +134,7 @@ async def assistant_status(
 @router.post("/voice/transcriptions", response_model=VoiceTranscriptionResponse)
 async def create_voice_transcription(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_assistant_enabled),
     session: Session = Depends(get_session),
 ) -> VoiceTranscriptionResponse:
     """Transcribe an explicitly recorded short clip without retaining its audio bytes."""
@@ -231,6 +249,7 @@ def message_response(
         role=message.role.value,
         content=message.content,
         created_at=message.created_at,
+        idempotency_key=message.idempotency_key,
         proposals=[proposal_response(proposal) for proposal in proposals],
     )
 
@@ -415,66 +434,100 @@ async def create_streaming_chat_turn(
     """Stream the assistant reply while committing the durable turn at completion."""
     note_request_details(request, message_length=len(payload.text))
     thread = get_or_create_thread(session, current_user.id)
-    if idempotency_key is not None:
-        idempotency_key = idempotency_key.strip()
-        if not idempotency_key or len(idempotency_key) > 128:
-            raise HTTPException(status_code=422, detail="La clé d’idempotence est invalide.")
-        previous_user_message = session.scalar(
-            select(AssistantMessage).where(
-                AssistantMessage.thread_id == thread.id,
-                AssistantMessage.role == AssistantMessageRole.USER,
-                AssistantMessage.idempotency_key == idempotency_key,
+    claimed_key: str | None = None
+    previous_user_message: AssistantMessage | None = None
+    try:
+        if idempotency_key is not None:
+            idempotency_key = idempotency_key.strip()
+            if not idempotency_key or len(idempotency_key) > 128:
+                raise HTTPException(status_code=422, detail="La clé d’idempotence est invalide.")
+            _claim_stream_turn(thread.id, idempotency_key)
+            claimed_key = idempotency_key
+            previous_user_message = session.scalar(
+                select(AssistantMessage).where(
+                    AssistantMessage.thread_id == thread.id,
+                    AssistantMessage.role == AssistantMessageRole.USER,
+                    AssistantMessage.idempotency_key == idempotency_key,
+                )
             )
-        )
-        if previous_user_message is not None:
-            previous_assistant_message = session.scalar(
-                select(AssistantMessage)
-                .where(
+            if previous_user_message is not None:
+                if previous_user_message.content != payload.text:
+                    raise HTTPException(
+                        status_code=409, detail="Cette clé appartient à un autre message."
+                    )
+                next_user_at = session.scalar(
+                    select(AssistantMessage.created_at)
+                    .where(
+                        AssistantMessage.thread_id == thread.id,
+                        AssistantMessage.role == AssistantMessageRole.USER,
+                        AssistantMessage.created_at > previous_user_message.created_at,
+                    )
+                    .order_by(AssistantMessage.created_at.asc())
+                    .limit(1)
+                )
+                reply_query = select(AssistantMessage).where(
                     AssistantMessage.thread_id == thread.id,
                     AssistantMessage.role == AssistantMessageRole.ASSISTANT,
                     AssistantMessage.created_at >= previous_user_message.created_at,
                 )
-                .order_by(AssistantMessage.created_at.asc())
-            )
-            if previous_assistant_message is None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Ce tour assistant est déjà en cours de traitement.",
+                if next_user_at is not None:
+                    reply_query = reply_query.where(AssistantMessage.created_at < next_user_at)
+                previous_assistant_message = session.scalar(
+                    reply_query.order_by(AssistantMessage.created_at.asc())
                 )
-            previous_proposals = list(
-                session.scalars(
-                    select(AssistantProposal).where(
-                        AssistantProposal.assistant_message_id == previous_assistant_message.id
+                if previous_assistant_message is not None:
+                    previous_proposals = list(
+                        session.scalars(
+                            select(AssistantProposal).where(
+                                AssistantProposal.assistant_message_id
+                                == previous_assistant_message.id
+                            )
+                        )
                     )
+                    replay = AssistantChatResponse(
+                        message=message_response(previous_assistant_message, previous_proposals),
+                        choices=[],
+                        remembered=[],
+                        runtime="local",
+                    )
+
+                    def replay_events() -> Iterator[str]:
+                        yield _sse("complete", replay.model_dump(mode="json"))
+
+                    _release_stream_turn(thread.id, claimed_key)
+                    claimed_key = None
+                    return StreamingResponse(replay_events(), media_type="text/event-stream")
+                if not payload.retry:
+                    raise HTTPException(
+                        status_code=409, detail="Ce tour assistant est déjà en cours de traitement."
+                    )
+        elif payload.retry:
+            raise HTTPException(status_code=422, detail="Une clé est requise pour réessayer.")
+
+        recent_turns = recent_messages(
+            session,
+            thread.id,
+            limit=10,
+            exclude_message_id=previous_user_message.id if previous_user_message else None,
+        )
+        recalled_memories = accessible_memory_summaries(
+            session, current_user.id, limit=12, query=payload.text
+        )
+        personal_context = accessible_personal_context(session, current_user.id, limit=8)
+        if previous_user_message is None:
+            session.add(
+                AssistantMessage(
+                    thread_id=thread.id,
+                    role=AssistantMessageRole.USER,
+                    idempotency_key=idempotency_key,
+                    content=payload.text,
+                    created_at=datetime.now(UTC),
                 )
             )
-            replay = AssistantChatResponse(
-                message=message_response(previous_assistant_message, previous_proposals),
-                choices=[],
-                remembered=[],
-                runtime="local",
-            )
-
-            def replay_events() -> Iterator[str]:
-                yield _sse("complete", replay.model_dump(mode="json"))
-
-            return StreamingResponse(replay_events(), media_type="text/event-stream")
-
-    recent_turns = recent_messages(session, thread.id, limit=10)
-    recalled_memories = accessible_memory_summaries(
-        session, current_user.id, limit=12, query=payload.text
-    )
-    personal_context = accessible_personal_context(session, current_user.id, limit=8)
-    session.add(
-        AssistantMessage(
-            thread_id=thread.id,
-            role=AssistantMessageRole.USER,
-            idempotency_key=idempotency_key,
-            content=payload.text,
-            created_at=datetime.now(UTC),
-        )
-    )
-    session.commit()
+            session.commit()
+    except Exception:
+        _release_stream_turn(thread.id, claimed_key)
+        raise
 
     async def events() -> Iterator[str]:
         raw_content = ""
@@ -527,6 +580,7 @@ async def create_streaming_chat_turn(
             )
         finally:
             cancel_event.set()
+            _release_stream_turn(thread.id, claimed_key)
 
     return StreamingResponse(
         events(),

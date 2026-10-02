@@ -8,6 +8,7 @@ import { darkTheme, type ColorTokens } from '@/src/theme';
 type Props = {
   accessToken: string | null;
   colors: ColorTokens;
+  variant?: 'home' | 'chat';
   disabled?: boolean;
   sending?: boolean;
   hasText: boolean;
@@ -20,6 +21,7 @@ type Props = {
 export function VoiceCapture({
   accessToken,
   colors,
+  variant = 'home',
   disabled = false,
   sending = false,
   hasText,
@@ -30,6 +32,7 @@ export function VoiceCapture({
   const held = useRef(false);
   const styles = makeStyles(colors);
   const unavailable = disabled || !accessToken || (sending && !onCancelSend);
+  const chat = variant === 'chat';
   const explainVoice = () => {
     if (unavailable || sending) return;
     held.current = true;
@@ -43,8 +46,16 @@ export function VoiceCapture({
       }
       auditLongPressAction="assistant.voice.unavailable"
       accessibilityRole="button"
-      accessibilityLabel={sending && onCancelSend ? 'Arrêter la génération' : 'Envoyer le texte'}
-      accessibilityHint="Un appui envoie le texte. La transcription audio est actuellement indisponible."
+      accessibilityLabel={
+        sending && onCancelSend
+          ? 'Arrêter la génération'
+          : hasText
+            ? 'Envoyer le message'
+            : 'Dictée indisponible'
+      }
+      accessibilityHint={
+        hasText ? 'Un appui envoie le message.' : 'Un appui indique la disponibilité de la dictée.'
+      }
       accessibilityState={{ busy: sending, disabled: unavailable }}
       accessibilityActions={[{ name: 'voice', label: 'Disponibilité de la transcription audio' }]}
       onAccessibilityAction={({ nativeEvent }) => {
@@ -63,9 +74,12 @@ export function VoiceCapture({
         if (held.current || unavailable) return;
         if (sending) onCancelSend?.();
         else if (hasText) onSend();
+        else explainVoice();
       }}
       style={({ pressed }) => [
         styles.button,
+        chat && styles.chatButton,
+        chat && !hasText && !sending && styles.chatMic,
         unavailable && styles.disabled,
         pressed && !unavailable && styles.pressed,
       ]}
@@ -73,7 +87,14 @@ export function VoiceCapture({
       {sending && !onCancelSend ? (
         <ActivityIndicator color={darkTheme.colors.ink} />
       ) : (
-        <Text style={styles.icon}>{sending ? 'stop' : 'arrow_upward'}</Text>
+        <Text
+          style={[
+            styles.icon,
+            chat && (hasText || sending ? styles.chatSendIcon : styles.chatMicIcon),
+          ]}
+        >
+          {sending ? 'stop' : chat ? (hasText ? 'send' : 'mic') : 'arrow_upward'}
+        </Text>
       )}
     </Pressable>
   );
@@ -91,6 +112,10 @@ function makeStyles(colors: ColorTokens) {
       justifyContent: 'center',
     },
     icon: { color: darkTheme.colors.ink, fontFamily: 'MaterialSymbols_400Regular', fontSize: 24 },
+    chatButton: { borderRadius: 22, height: 44, width: 44 },
+    chatMic: { backgroundColor: colors.white, borderColor: colors.border, borderWidth: 1 },
+    chatMicIcon: { color: colors.spruce, fontSize: 22 },
+    chatSendIcon: { color: colors.linen, fontSize: 23 },
     disabled: { opacity: 0.5 },
     pressed: { opacity: 0.8 },
   });

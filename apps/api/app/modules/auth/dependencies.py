@@ -71,6 +71,15 @@ def get_current_user(
     return authenticated.user
 
 
+def require_assistant_enabled(current_user: User = Depends(get_current_user)) -> User:
+    if not current_user.enable_assistant:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Vous n'avez pas accès à cette fonctionnalité.",
+        )
+    return current_user
+
+
 def get_authenticated_secret_session(
     authenticated: AuthenticatedSession = Depends(get_authenticated_session),
     secret_access_token: str | None = Header(default=None, alias="X-Cocoon-Secret-Access"),

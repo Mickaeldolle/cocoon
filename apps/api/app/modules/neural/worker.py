@@ -231,6 +231,14 @@ def process_capture_run(
     if run.status is CaptureRunStatus.CANCELLED:
         raise HTTPException(status_code=409, detail="Cette exécution a été annulée.")
 
+    user = session.get(User, run.user_id)
+    if user is None or not user.enable_assistant:
+        run.status = CaptureRunStatus.CANCELLED
+        run.finished_at = datetime.now(UTC)
+        _add_event(session, run.id, "cancelled", {"reason": "assistant_disabled"})
+        session.commit()
+        raise HTTPException(status_code=403, detail="Vous n'avez pas accès à cette fonctionnalité.")
+
     run = _claim_run(session, run_id, worker_id or f"http-{uuid4()}")
     if run.status is CaptureRunStatus.COMPLETED:
         return _response_from_run(session, run)

@@ -19,6 +19,7 @@ type SessionState = {
   user: CurrentUser | null;
   start: (tokens: TokenPair) => Promise<void>;
   restore: () => Promise<void>;
+  refreshUser: () => Promise<void>;
   end: () => Promise<void>;
 };
 
@@ -57,6 +58,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       await clearRefreshToken();
       set({ accessToken: null, user: null, initialized: true });
     }
+  },
+
+  refreshUser: async () => {
+    const accessToken = get().accessToken;
+    if (!accessToken) return;
+    const user = await authApi.me(accessToken);
+    if (get().accessToken === accessToken) set({ user });
   },
 
   end: async () => {

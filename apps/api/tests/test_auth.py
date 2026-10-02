@@ -39,6 +39,7 @@ def test_register_login_refresh_and_logout_revoke_access(client: TestClient) -> 
     )
     assert me.status_code == 200
     assert me.json()["email"] == "membre@example.com"
+    assert me.json()["enable_assistant"] is False
     assert "password_hash" not in me.json()
 
     refreshed = test_client.post(

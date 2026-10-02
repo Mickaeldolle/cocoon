@@ -32,15 +32,15 @@ def get_or_create_thread(session: Session, user_id: UUID) -> AssistantThread:
 
 
 def recent_messages(
-    session: Session, thread_id: UUID, *, limit: int
+    session: Session, thread_id: UUID, *, limit: int, exclude_message_id: UUID | None = None
 ) -> list[dict[str, str]]:
     """Load a bounded conversation slice from one already-authorized thread."""
+    query = select(AssistantMessage).where(AssistantMessage.thread_id == thread_id)
+    if exclude_message_id is not None:
+        query = query.where(AssistantMessage.id != exclude_message_id)
     messages = list(
         session.scalars(
-            select(AssistantMessage)
-            .where(AssistantMessage.thread_id == thread_id)
-            .order_by(AssistantMessage.created_at.desc())
-            .limit(limit)
+            query.order_by(AssistantMessage.created_at.desc()).limit(limit)
         )
     )
     return [

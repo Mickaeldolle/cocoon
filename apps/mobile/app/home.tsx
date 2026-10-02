@@ -1,7 +1,7 @@
 import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Redirect, router } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { Redirect, router, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { neuralApi, secretApi } from '@/src/services/api';
@@ -25,6 +25,8 @@ export default function HomeScreen() {
   const initialized = useSessionStore((state) => state.initialized);
   const token = useSessionStore((state) => state.accessToken);
   const user = useSessionStore((state) => state.user);
+  const refreshUser = useSessionStore((state) => state.refreshUser);
+  const assistantEnabled = user?.enable_assistant === true;
   const secretToken = useSecretAccessStore((state) => state.token);
   const clearSecretAccess = useSecretAccessStore((state) => state.clear);
   const client = useQueryClient();
@@ -39,6 +41,11 @@ export default function HomeScreen() {
   const colors = (mode === 'dark' ? darkTheme : lightTheme).colors;
   const styles = makeStyles(colors);
   const [text, setText] = useState('');
+  useFocusEffect(
+    useCallback(() => {
+      void refreshUser().catch(() => undefined);
+    }, [refreshUser]),
+  );
   const [notice, setNotice] = useState<string | null>(null);
   const input = useRef<TextInput>(null);
   const recoveryKey = useRef<string | null>(null);
@@ -244,6 +251,7 @@ export default function HomeScreen() {
             <TextInput
               ref={input}
               accessibilityLabel="Déposer une pensée"
+              editable={assistantEnabled}
               multiline
               value={text}
               onChangeText={(value) => {
@@ -258,7 +266,7 @@ export default function HomeScreen() {
             <VoiceCapture
               accessToken={token}
               colors={colors}
-              disabled={!token || !user?.id}
+              disabled={!token || !user?.id || !assistantEnabled}
               sending={capture.isPending}
               hasText={!!text.trim()}
               onSend={() => {
@@ -272,6 +280,22 @@ export default function HomeScreen() {
               onError={setNotice}
             />
           </View>
+          {!assistantEnabled ? (
+            <Text accessibilityRole="alert" style={styles.accessNotice}>
+              Vous n&apos;avez pas accès à cette fonctionnalité
+            </Text>
+          ) : null}
+          <Pressable
+            auditAction="home.assistant.open"
+            accessibilityRole="button"
+            accessibilityLabel="Ouvrir la conversation avec votre assistant"
+            onPress={() => router.push('/assistant')}
+            style={styles.conversationLink}
+          >
+            <Text style={styles.conversationLinkIcon}>chat_bubble_outline</Text>
+            <Text style={styles.conversationLinkText}>Voir la conversation</Text>
+            <Text style={styles.conversationLinkIcon}>arrow_forward</Text>
+          </Pressable>
           {capture.isPending ? (
             <Pressable
               auditAction="home.capture.cancel"
@@ -384,6 +408,7 @@ function makeStyles(colors: ColorTokens) {
       marginBottom: 16,
     },
     intro: { color: colors.muted, fontSize: 16, lineHeight: 23, marginTop: 12 },
+    accessNotice: { color: colors.muted, fontSize: 13, lineHeight: 19, marginTop: 8 },
     profile: {
       alignItems: 'center',
       borderColor: colors.border,
@@ -414,6 +439,20 @@ function makeStyles(colors: ColorTokens) {
       paddingVertical: 8,
       boxShadow: '0 2px 5px rgba(0, 0, 0, 0.12)',
     },
+    conversationLink: {
+      alignItems: 'center',
+      alignSelf: 'flex-start',
+      flexDirection: 'row',
+      gap: 7,
+      minHeight: 44,
+      marginTop: 8,
+    },
+    conversationLinkIcon: {
+      color: colors.spruce,
+      fontFamily: 'MaterialSymbols_400Regular',
+      fontSize: 20,
+    },
+    conversationLinkText: { color: colors.spruce, fontSize: 14, fontWeight: '700' },
     disabled: { opacity: 0.55 },
     cancel: { alignSelf: 'flex-start', marginTop: 8, paddingHorizontal: 4, paddingVertical: 5 },
     cancelText: { color: colors.clay, fontWeight: '700' },

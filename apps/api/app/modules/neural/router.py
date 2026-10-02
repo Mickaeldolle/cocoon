@@ -15,7 +15,7 @@ from app.modules.assistant.proposals import (
     record_failed_proposal,
     record_proposal_execution,
 )
-from app.modules.auth.dependencies import get_current_user
+from app.modules.auth.dependencies import get_current_user, require_assistant_enabled
 from app.modules.auth.models import User
 from app.modules.neural.models import (
     Capture,
@@ -265,7 +265,7 @@ def _capture(
 @router.post("/captures", response_model=CaptureResponse, status_code=201)
 def create_capture(
     payload: CaptureCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_assistant_enabled),
     session: Session = Depends(get_session),
     idempotency_key: str | None = Header(default=None, alias="X-Capture-Idempotency-Key"),
 ) -> CaptureResponse:
@@ -279,7 +279,7 @@ def create_capture(
 @router.post("/captures/queue", response_model=CaptureRunResponse, status_code=202)
 def queue_capture(
     payload: CaptureCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_assistant_enabled),
     session: Session = Depends(get_session),
     idempotency_key: str | None = Header(default=None, alias="X-Capture-Idempotency-Key"),
 ) -> CaptureRunResponse:
@@ -295,7 +295,7 @@ def queue_capture(
 @router.post("/captures/stream")
 def stream_capture(
     payload: CaptureCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_assistant_enabled),
     session: Session = Depends(get_session),
     idempotency_key: str | None = Header(default=None, alias="X-Capture-Idempotency-Key"),
     last_event_id: int = Header(default=0, ge=0, alias="Last-Event-ID"),

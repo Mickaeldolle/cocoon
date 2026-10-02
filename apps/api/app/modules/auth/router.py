@@ -90,6 +90,7 @@ def register(
         email=payload.email.lower(),
         display_name=payload.display_name.strip(),
         password_hash=hash_password(payload.password),
+        enable_assistant=False,
     )
     session.add(user)
     try:

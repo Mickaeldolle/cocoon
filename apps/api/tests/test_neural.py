@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.commands.run_capture_worker import process_once
 from app.main import app
 from app.modules.assistant.models import ProposalExecution
+from app.modules.auth.models import User
 from app.modules.neural import service as neural_service
 from app.modules.neural import worker as neural_worker
 from app.modules.neural.models import (
@@ -37,6 +38,11 @@ def headers(client: TestClient, email: str) -> dict[str, str]:
             "platform": "ios",
         },
     )
+    with client.app.state.test_session_factory() as session:
+        user = session.scalar(select(User).where(User.email == email))
+        assert user is not None
+        user.enable_assistant = True
+        session.commit()
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 

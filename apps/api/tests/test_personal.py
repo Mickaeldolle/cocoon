@@ -1,4 +1,7 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from app.modules.auth.models import User
 
 
 def registration(email: str, name: str, installation: str) -> dict[str, object]:
@@ -78,6 +81,11 @@ def test_personal_projects_are_owner_scoped_and_updateable(client: TestClient) -
 
 def test_assistant_legacy_organize_never_saves_without_confirmation(client: TestClient) -> None:
     marie = headers(client, "marie@example.com", "Marie Dupont", "personal-assistant-test")
+    with client.app.state.test_session_factory() as session:
+        user = session.scalar(select(User).where(User.email == "marie@example.com"))
+        assert user is not None
+        user.enable_assistant = True
+        session.commit()
     response = client.post(
         "/api/assistant/organize",
         headers=marie,

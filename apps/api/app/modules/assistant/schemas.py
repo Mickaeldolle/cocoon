@@ -70,6 +70,7 @@ class GroceryMealPlanResponse(BaseModel):
 
 class AssistantTurnRequest(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
+    retry: bool = False
 
     @field_validator("text")
     @classmethod
@@ -225,6 +226,7 @@ class AssistantMessageResponse(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     created_at: datetime
+    idempotency_key: str | None = None
     proposals: list[AssistantProposalResponse] = Field(default_factory=list)
 
 
