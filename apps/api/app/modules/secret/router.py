@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from webauthn import (
@@ -74,6 +74,7 @@ from app.modules.conversations.schemas import (
     MessageCreate,
     MessageResponse,
 )
+from app.modules.secret.notifications import clear_secret_nudge, schedule_secret_nudges
 from app.modules.secret.typing import secret_typing
 
 router = APIRouter(prefix="/api/secret", tags=["secret"])
@@ -568,17 +569,42 @@ def list_secret_conversations(
     authenticated: AuthenticatedSecretSession = Depends(get_authenticated_secret_session),
     session: Session = Depends(get_session),
 ) -> list[ConversationResponse]:
+    user_id = authenticated.authenticated.user.id
+    session.scalar(select(User.id).where(User.id == user_id).with_for_update())
     rows = session.execute(
         select(Conversation, ConversationMember)
         .join(ConversationMember)
         .where(
-            ConversationMember.user_id == authenticated.authenticated.user.id,
+            ConversationMember.user_id == user_id,
             ConversationMember.is_hidden.is_(True),
             ConversationMember.status != ConversationMemberStatus.DECLINED,
         )
         .order_by(Conversation.updated_at.desc())
     ).all()
-    return [conversation_response(conversation, membership) for conversation, membership in rows]
+    unread_ids = set(
+        session.scalars(
+            select(Message.conversation_id)
+            .join(ConversationMember, ConversationMember.conversation_id == Message.conversation_id)
+            .where(
+                ConversationMember.user_id == user_id,
+                ConversationMember.is_hidden.is_(True),
+                Message.sender_id != user_id,
+                or_(
+                    ConversationMember.last_read_at.is_(None),
+                    Message.created_at > ConversationMember.last_read_at,
+                ),
+            )
+            .distinct()
+        )
+    )
+    clear_secret_nudge(session, user_id)
+    session.commit()
+    return [
+        conversation_response(conversation, membership).model_copy(
+            update={"has_unread_messages": conversation.id in unread_ids}
+        )
+        for conversation, membership in rows
+    ]
 
 
 @router.post(
@@ -721,6 +747,11 @@ def list_secret_messages(
     membership = secret_membership_or_not_found(
         session, conversation_id, authenticated.authenticated.user.id
     )
+    session.scalar(
+        select(User.id)
+        .where(User.id == authenticated.authenticated.user.id)
+        .with_for_update()
+    )
     messages = list(
         session.scalars(
             select(Message)
@@ -730,6 +761,7 @@ def list_secret_messages(
         )
     )
     membership.last_read_at = datetime.now(UTC)
+    clear_secret_nudge(session, authenticated.authenticated.user.id)
     session.commit()
     # Read receipts are visible only inside this accepted, unlocked hidden conversation.
     memberships = list(
@@ -809,6 +841,8 @@ def send_secret_message(
     )
     session.add(message)
     try:
+        session.flush()
+        schedule_secret_nudges(session, conversation_id, user_id)
         session.commit()
     except IntegrityError:
         session.rollback()

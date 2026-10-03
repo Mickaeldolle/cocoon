@@ -41,6 +41,7 @@ export default function SecretConversationsScreen() {
     queryKey: secretConversationsKey,
     enabled: Boolean(accessToken && secretToken),
     queryFn: () => secretApi.listConversations(accessToken!, secretToken!),
+    refetchInterval: 30_000,
     retry: false,
   });
 
@@ -216,6 +217,12 @@ export default function SecretConversationsScreen() {
                   <Text style={styles.pending}>Invitation en attente</Text>
                 ) : null}
               </View>
+              {isSuperadmin && conversation.has_unread_messages ? (
+                <View
+                  accessibilityLabel="Nouveau message dans cette discussion"
+                  style={styles.unreadDot}
+                />
+              ) : null}
               {conversation.membership_status === 'pending' ? null : (
                 <Text style={styles.arrow}>›</Text>
               )}
@@ -290,6 +297,13 @@ export default function SecretConversationsScreen() {
 function makeStyles(colors: ColorTokens) {
   return StyleSheet.create({
     screen: { ...subtleBackground(colors), flex: 1 },
+    unreadDot: {
+      backgroundColor: colors.spruce,
+      borderRadius: 5,
+      height: 10,
+      marginRight: 10,
+      width: 10,
+    },
     topbar: {
       alignItems: 'center',
       borderBottomColor: colors.border,

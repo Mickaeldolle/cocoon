@@ -10,13 +10,16 @@ from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
+from pywebpush import WebPushException, webpush
 from sqlalchemy import func, or_, select
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.modules.assistant.models import AssistantPreference, NotificationOutbox, RecurringReminder
-from app.modules.auth.models import Device
+from app.modules.auth.models import Device, WebPushSubscription
+from app.modules.auth.web_push import valid_web_push_endpoint
 from app.modules.personal.models import PersonalTask
+from app.modules.secret.models import SecretNotificationDebounce
 
 MAX_CATCH_UP_OCCURRENCES = 12
 LEASE_SECONDS = 600
@@ -68,10 +71,12 @@ def _add_outbox(
     now: datetime,
     target_type: str | None = None,
     target_id: str | None = None,
+    body: str = "Vous avez un rappel à consulter.",
+    enforce_quota: bool = True,
 ) -> bool:
     if session.scalar(select(NotificationOutbox.id).where(NotificationOutbox.dedupe_key == key)):
         return False
-    if not _quota_available(session, user_id, now):
+    if enforce_quota and not _quota_available(session, user_id, now):
         return False
     data: dict[str, object] = {"kind": kind}
     if target_type is not None and target_id is not None:
@@ -81,7 +86,7 @@ def _add_outbox(
             user_id=user_id,
             dedupe_key=key,
             title="Cocoon",
-            body="Vous avez un rappel à consulter.",
+            body=body,
             data=data,
         )
     )
@@ -157,6 +162,23 @@ def queue_pending_notifications(now: datetime) -> int:
                 queued += _add_outbox(
                     session, user_id=preference.user_id, key=key, kind="daily_brief", now=now
                 )
+        pending_nudges = session.scalars(
+            select(SecretNotificationDebounce)
+            .where(SecretNotificationDebounce.due_at <= now)
+            .with_for_update(skip_locked=True)
+        ).all()
+        for pending in pending_nudges:
+            if _add_outbox(
+                session,
+                user_id=pending.user_id,
+                key=f"secret-nudge:{uuid4()}",
+                kind="assistant_update",
+                body="Votre assistant a du nouveau pour vous.",
+                now=now,
+                enforce_quota=False,
+            ):
+                queued += 1
+                session.delete(pending)
         session.commit()
     return queued
 
@@ -251,6 +273,15 @@ def send_pending_notifications(now: datetime) -> int:
             item = _claim_one(session, worker_id, now)
             if item is None:
                 break
+            session.refresh(item)
+            if item.cancelled_at is not None:
+                continue
+            if item.dedupe_key.startswith("secret-nudge:") and session.get(
+                SecretNotificationDebounce, item.user_id
+            ) is not None:
+                item.cancelled_at = now
+                session.commit()
+                continue
             devices = list(
                 session.scalars(
                     select(Device).where(
@@ -259,37 +290,77 @@ def send_pending_notifications(now: datetime) -> int:
                 )
             )
             tokens = [device.push_token for device in devices]
-            if not tokens:
+            subscriptions = list(
+                session.scalars(
+                    select(WebPushSubscription).where(WebPushSubscription.user_id == item.user_id)
+                )
+            )
+            if not tokens and not subscriptions:
                 _finish(session, item.id, worker_id, now, error="no_device")
                 continue
-            payload = [
-                {"to": token, "title": item.title, "body": item.body, "data": item.data}
-                for token in tokens
-            ]
-            request = Request(
-                settings.expo_push_endpoint,
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json", "Accept": "application/json"},
-                method="POST",
-            )
-            try:
-                with urlopen(request, timeout=10) as response:  # noqa: S310
-                    if not 200 <= response.status < 300:
-                        raise HTTPError(
-                            settings.expo_push_endpoint,
-                            response.status,
-                            "push failed",
-                            {},
-                            None,
+            delivered = False
+            ticket = None
+            if tokens:
+                payload = [
+                    {"to": token, "title": item.title, "body": item.body, "data": item.data}
+                    for token in tokens
+                ]
+                request = Request(
+                    settings.expo_push_endpoint,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Accept": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urlopen(request, timeout=10) as response:  # noqa: S310
+                        if not 200 <= response.status < 300:
+                            raise HTTPError(
+                                settings.expo_push_endpoint,
+                                response.status,
+                                "push failed",
+                                {},
+                                None,
+                            )
+                        raw = response.read()
+                        ticket = json.loads(raw.decode("utf-8")) if raw else None
+                    _disable_invalid_tokens(session, tokens, ticket)
+                    ticket = _attach_ticket_devices(ticket, devices)
+                    delivered = True
+                except (HTTPError, URLError, TimeoutError, ValueError):
+                    pass
+            if settings.web_push_private_key and settings.web_push_subject:
+                for subscription in subscriptions:
+                    try:
+                        if not valid_web_push_endpoint(subscription.endpoint):
+                            session.delete(subscription)
+                            continue
+                        webpush(
+                            subscription_info={
+                                "endpoint": subscription.endpoint,
+                                "keys": {"p256dh": subscription.p256dh, "auth": subscription.auth},
+                            },
+                            data=json.dumps(
+                                {"title": item.title, "body": item.body, "url": "/home"}
+                            ),
+                            vapid_private_key=settings.web_push_private_key,
+                            vapid_claims={"sub": settings.web_push_subject},
+                            timeout=10,
+                            ttl=3600,
                         )
-                    raw = response.read()
-                    ticket = json.loads(raw.decode("utf-8")) if raw else None
-            except (HTTPError, URLError, TimeoutError, ValueError):
-                _finish(session, item.id, worker_id, now, error="provider_unavailable")
-                continue
-            _disable_invalid_tokens(session, tokens, ticket)
-            ticket = _attach_ticket_devices(ticket, devices)
-            if _finish(session, item.id, worker_id, now, ticket=ticket):
+                        delivered = True
+                    except WebPushException as error:
+                        if error.response is not None and error.response.status_code in {404, 410}:
+                            session.delete(subscription)
+                    except (OSError, ValueError):
+                        pass
+            if _finish(
+                session,
+                item.id,
+                worker_id,
+                now,
+                ticket=ticket if delivered else None,
+                error=None if delivered else "provider_unavailable",
+            ) and delivered:
                 sent += 1
     return sent
 

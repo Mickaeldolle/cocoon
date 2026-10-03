@@ -846,6 +846,7 @@ def list_notifications(
         .where(
             NotificationOutbox.user_id == current_user.id,
             NotificationOutbox.cancelled_at.is_(None),
+            ~NotificationOutbox.dedupe_key.startswith("secret-nudge:"),
         )
         .order_by(NotificationOutbox.created_at.desc())
         .limit(100)
@@ -864,6 +865,7 @@ def mark_notification_read(
             NotificationOutbox.id == notification_id,
             NotificationOutbox.user_id == current_user.id,
             NotificationOutbox.cancelled_at.is_(None),
+            ~NotificationOutbox.dedupe_key.startswith("secret-nudge:"),
         )
     )
     if item is None:

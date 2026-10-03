@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     stt_model: str | None = None
     stt_timeout_seconds: int = Field(default=90, ge=3, le=300)
     expo_push_endpoint: str = "https://exp.host/--/api/v2/push/send"
+    web_push_public_key: str | None = None
+    web_push_private_key: str | None = None
+    web_push_subject: str | None = None
     worker_interval_seconds: int = Field(default=60, ge=5, le=3600)
     worker_lease_seconds: int = Field(default=600, ge=30, le=3600)
     metrics_token: str | None = Field(default=None, min_length=32)
@@ -86,6 +89,13 @@ class Settings(BaseSettings):
     def disable_blank_metrics_token(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("expo_push_endpoint", mode="before")
+    @classmethod
+    def default_blank_expo_endpoint(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return "https://exp.host/--/api/v2/push/send"
         return value
 
     @field_validator("audit_trusted_proxy_cidrs")

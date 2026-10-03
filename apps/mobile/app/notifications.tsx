@@ -9,6 +9,7 @@ import { assistantApi, authApi, type PersonalNotification } from '@/src/services
 import {
   registerForPersonalNotifications,
   routeForPersonalNotification,
+  unsubscribeCurrentWebPush,
 } from '@/src/services/notifications';
 import { useSessionStore } from '@/src/stores/session-store';
 import { useThemeStore } from '@/src/stores/theme-store';
@@ -58,6 +59,7 @@ export default function NotificationsScreen() {
   const revoke = useMutation({
     mutationFn: () => authApi.revokeConsent(token!, 'notifications.push'),
     onSuccess: () => {
+      void unsubscribeCurrentWebPush();
       setConfirmingDisable(false);
       setNotice('Les notifications sont désactivées sur tous vos appareils.');
       void client.invalidateQueries({ queryKey: ['auth', 'consents', userId] });

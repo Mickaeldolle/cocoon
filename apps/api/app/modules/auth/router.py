@@ -16,6 +16,7 @@ from webauthn import (
 from webauthn.helpers import options_to_json
 from webauthn.helpers.structs import PublicKeyCredentialDescriptor, UserVerificationRequirement
 
+from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.security import decode_normal_access_token, hash_password
 from app.modules.audit.service import (
@@ -37,6 +38,7 @@ from app.modules.auth.models import (
     User,
     UserConsent,
     UserSession,
+    WebPushSubscription,
 )
 from app.modules.auth.schemas import (
     ConsentResponse,
@@ -50,8 +52,10 @@ from app.modules.auth.schemas import (
     RegisterRequest,
     TokenPair,
     UserResponse,
+    WebPushSubscriptionRequest,
 )
 from app.modules.auth.service import authenticate, issue_session, rotate_session
+from app.modules.auth.web_push import valid_web_push_endpoint
 from app.modules.auth.webauthn_config import checked_credential, require_webauthn_relying_party
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -266,6 +270,11 @@ def logout(
     # A device token must not continue receiving the previous account's reminders
     # after logout or before another account explicitly re-registers it.
     authenticated.user_session.device.push_token = None
+    session.execute(
+        delete(WebPushSubscription).where(
+            WebPushSubscription.device_id == authenticated.user_session.device_id
+        )
+    )
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -284,6 +293,69 @@ def register_push_token(
     """Associate one Expo push token with the authenticated device session only."""
     require_active_consent(session, authenticated.user.id, "notifications.push")
     authenticated.user_session.device.push_token = payload.push_token
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/web-push/public-key")
+def web_push_public_key(
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+) -> dict[str, str]:
+    settings = get_settings()
+    if not all(
+        (settings.web_push_public_key, settings.web_push_private_key, settings.web_push_subject)
+    ):
+        raise HTTPException(status_code=503, detail="Notifications web indisponibles.")
+    return {"public_key": settings.web_push_public_key}
+
+
+@router.put("/web-push/subscription", status_code=status.HTTP_204_NO_CONTENT)
+def register_web_push_subscription(
+    payload: WebPushSubscriptionRequest,
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> Response:
+    if authenticated.user_session.device.platform != "web":
+        raise HTTPException(status_code=400, detail="Abonnement réservé au navigateur.")
+    require_active_consent(session, authenticated.user.id, "notifications.push")
+    if not valid_web_push_endpoint(payload.endpoint):
+        raise HTTPException(status_code=422, detail="Service de notification web non autorisé.")
+    existing = session.scalar(
+        select(WebPushSubscription)
+        .where(WebPushSubscription.endpoint == payload.endpoint)
+        .with_for_update()
+    )
+    if existing is not None and existing.user_id != authenticated.user.id:
+        raise HTTPException(status_code=409, detail="Abonnement déjà associé à un autre compte.")
+    if existing is None:
+        existing = WebPushSubscription(
+            user_id=authenticated.user.id,
+            device_id=authenticated.user_session.device_id,
+            endpoint=payload.endpoint,
+            p256dh=payload.p256dh,
+            auth=payload.auth,
+        )
+        session.add(existing)
+    else:
+        existing.device_id = authenticated.user_session.device_id
+        existing.p256dh = payload.p256dh
+        existing.auth = payload.auth
+    session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/web-push/subscription", status_code=status.HTTP_204_NO_CONTENT)
+def remove_web_push_subscription(
+    payload: WebPushSubscriptionRequest,
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> Response:
+    session.execute(
+        delete(WebPushSubscription).where(
+            WebPushSubscription.endpoint == payload.endpoint,
+            WebPushSubscription.user_id == authenticated.user.id,
+        )
+    )
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -339,6 +411,9 @@ def revoke_device(
         UserSession.revoked_at.is_(None),
     ).update({UserSession.revoked_at: now}, synchronize_session=False)
     device.push_token = None
+    session.execute(
+        delete(WebPushSubscription).where(WebPushSubscription.device_id == device.id)
+    )
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -410,6 +485,9 @@ def revoke_consent(
     if policy_key == "notifications.push":
         session.query(Device).filter(Device.user_id == current_user.id).update(
             {Device.push_token: None}, synchronize_session=False
+        )
+        session.execute(
+            delete(WebPushSubscription).where(WebPushSubscription.user_id == current_user.id)
         )
     session.commit()
     session.refresh(consent)

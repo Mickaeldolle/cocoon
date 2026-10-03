@@ -43,6 +43,12 @@ class PushTokenRequest(BaseModel):
     )
 
 
+class WebPushSubscriptionRequest(BaseModel):
+    endpoint: str = Field(min_length=32, max_length=2048)
+    p256dh: str = Field(min_length=40, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")
+    auth: str = Field(min_length=16, max_length=256, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 class DeviceResponse(BaseModel):
     id: UUID
     name: str

@@ -84,6 +84,7 @@ export type Conversation = {
   updated_at: string;
   membership_status: 'pending' | 'accepted' | 'declined';
   recipient_name: string | null;
+  has_unread_messages?: boolean;
 };
 
 export type Message = {
@@ -449,6 +450,16 @@ export const authApi = {
         body: JSON.stringify({ push_token: pushToken }),
       }),
     ),
+  webPushPublicKey: (accessToken: string) =>
+    call<{ public_key: string }>('/api/auth/web-push/public-key', withAccessToken(accessToken)),
+  registerWebPush: (
+    accessToken: string,
+    subscription: { endpoint: string; p256dh: string; auth: string },
+  ) =>
+    call<void>(
+      '/api/auth/web-push/subscription',
+      withAccessToken(accessToken, { method: 'PUT', body: JSON.stringify(subscription) }),
+    ),
   grantConsent: (accessToken: string, policyKey: string, policyVersion = 1) =>
     call<Consent>(
       `/api/auth/consents/${encodeURIComponent(policyKey)}`,
@@ -462,6 +473,8 @@ export const authApi = {
       `/api/auth/consents/${encodeURIComponent(policyKey)}`,
       withAccessToken(accessToken, { method: 'DELETE' }),
     ),
+  listConsents: (accessToken: string) =>
+    call<Consent[]>('/api/auth/consents', withAccessToken(accessToken)),
   listDevices: (accessToken: string) =>
     call<Device[]>('/api/auth/devices', withAccessToken(accessToken)),
   revokeDevice: (accessToken: string, deviceId: string) =>

@@ -28,3 +28,31 @@ self.addEventListener('fetch', (event) => {
   }
   event.respondWith(fetch(event.request).catch(() => caches.match('/offline.html')));
 });
+
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try {
+    payload = event.data?.json() ?? {};
+  } catch {
+    // The service worker still shows the generic notification for malformed data.
+  }
+  event.waitUntil(
+    self.registration.showNotification(payload.title || 'Cocoon', {
+      body: payload.body || 'Votre assistant a du nouveau pour vous.',
+      icon: '/icons/icon-192.png',
+      data: { url: '/home' },
+    }),
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windows) => {
+      const existing = windows.find((windowClient) =>
+        windowClient.url.startsWith(self.location.origin),
+      );
+      return existing ? existing.focus() : clients.openWindow('/home');
+    }),
+  );
+});

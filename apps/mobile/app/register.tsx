@@ -33,7 +33,7 @@ export default function RegisterScreen() {
         password,
         display_name: displayName,
       });
-      await start(tokens);
+      await start(tokens, true);
       router.replace('/home');
     } catch (caught) {
       setError(

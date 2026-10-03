@@ -3,12 +3,13 @@ import { Platform } from 'react-native';
 
 import { authApi } from '@/src/services/api';
 
-export type PersonalNotificationRoute = '/dashboard/tasks' | '/notifications';
+export type PersonalNotificationRoute = '/dashboard/tasks' | '/notifications' | '/home';
 
 /** Map server-owned target types to a small allowlisted set of app routes. */
 export function routeForPersonalNotification(
   data: Record<string, unknown>,
 ): PersonalNotificationRoute {
+  if (data.kind === 'assistant_update') return '/home';
   return data.target_type === 'personal_task' && typeof data.target_id === 'string'
     ? '/dashboard/tasks'
     : '/notifications';
@@ -54,14 +55,49 @@ export async function subscribeToPersonalNotificationResponses(
 }
 
 export async function registerForPersonalNotifications(accessToken: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    if (
+      typeof window === 'undefined' ||
+      !window.isSecureContext ||
+      !('serviceWorker' in navigator) ||
+      !('PushManager' in window) ||
+      !('Notification' in window)
+    ) {
+      throw new Error('Les notifications web nécessitent HTTPS et un navigateur compatible.');
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      throw new Error('Autorisez les notifications dans les réglages du navigateur.');
+    }
+    const { public_key: publicKey } = await authApi.webPushPublicKey(accessToken);
+    const base64 = publicKey.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='));
+    const key = new Uint8Array(decoded.length);
+    for (let index = 0; index < decoded.length; index += 1) key[index] = decoded.charCodeAt(index);
+    const registration = await navigator.serviceWorker.register('/sw.js');
+    const subscription =
+      (await registration.pushManager.getSubscription()) ??
+      (await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: key,
+      }));
+    const serialized = subscription.toJSON();
+    if (!serialized.endpoint || !serialized.keys?.p256dh || !serialized.keys.auth) {
+      throw new Error('Le navigateur n’a pas créé un abonnement de notification valide.');
+    }
+    await authApi.grantConsent(accessToken, 'notifications.push');
+    await authApi.registerWebPush(accessToken, {
+      endpoint: serialized.endpoint,
+      p256dh: serialized.keys.p256dh,
+      auth: serialized.keys.auth,
+    });
+    return;
+  }
   const Notifications = await loadNotifications();
   if (!Notifications) {
     throw new Error(
       'Les notifications push nécessitent un development build ; Expo Go ne les prend pas en charge sur Android.',
     );
-  }
-  if (Platform.OS === 'web') {
-    throw new Error('Les notifications sont disponibles dans le build mobile Cocoon.');
   }
 
   const current = await Notifications.getPermissionsAsync();
@@ -91,4 +127,12 @@ export async function registerForPersonalNotifications(accessToken: string): Pro
   const pushToken = await Notifications.getExpoPushTokenAsync({ projectId });
   await authApi.grantConsent(accessToken, 'notifications.push');
   await authApi.registerPushToken(accessToken, pushToken.data);
+}
+
+export async function unsubscribeCurrentWebPush(): Promise<void> {
+  if (Platform.OS !== 'web' || typeof navigator === 'undefined' || !('serviceWorker' in navigator))
+    return;
+  const registration = await navigator.serviceWorker.getRegistration('/');
+  const subscription = await registration?.pushManager.getSubscription();
+  await subscription?.unsubscribe();
 }

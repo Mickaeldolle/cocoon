@@ -25,6 +25,7 @@ class ConversationResponse(BaseModel):
     updated_at: datetime
     membership_status: str = "accepted"
     recipient_name: str | None = None
+    has_unread_messages: bool = False
 
 
 class MessageCreate(BaseModel):

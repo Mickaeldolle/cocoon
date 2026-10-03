@@ -14,13 +14,17 @@ import {
   type CurrentUser,
   type TokenPair,
 } from '@/src/services/api';
+import {
+  registerForPersonalNotifications,
+  unsubscribeCurrentWebPush,
+} from '@/src/services/notifications';
 
 type SessionState = {
   initialized: boolean;
   accessToken: string | null;
   user: CurrentUser | null;
   sessionExpired: boolean;
-  start: (tokens: TokenPair) => Promise<void>;
+  start: (tokens: TokenPair, freshLogin?: boolean) => Promise<void>;
   restore: () => Promise<void>;
   refreshUser: () => Promise<void>;
   end: () => Promise<void>;
@@ -35,11 +39,36 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   user: null,
   sessionExpired: false,
 
-  start: async (tokens) => {
+  start: async (tokens, freshLogin = false) => {
     lastRenewedFrom = null;
+    if (freshLogin) {
+      try {
+        await unsubscribeCurrentWebPush();
+      } catch {
+        // A stale browser subscription is also rejected when another user registers it.
+      }
+    }
     await saveRefreshToken(tokens.refresh_token);
     const user = await authApi.me(tokens.access_token);
     set({ accessToken: tokens.access_token, user, initialized: true, sessionExpired: false });
+    if (
+      freshLogin &&
+      typeof Notification !== 'undefined' &&
+      Notification.permission === 'granted'
+    ) {
+      void authApi
+        .listConsents(tokens.access_token)
+        .then((consents) => {
+          if (
+            consents.some(
+              (consent) => consent.policy_key === 'notifications.push' && !consent.revoked_at,
+            )
+          ) {
+            return registerForPersonalNotifications(tokens.access_token);
+          }
+        })
+        .catch(() => undefined);
+    }
   },
 
   restore: async () => {
@@ -82,6 +111,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       if (accessToken) await authApi.logout(accessToken);
     } finally {
+      try {
+        await unsubscribeCurrentWebPush();
+      } catch {
+        // The API already removed this device's subscription on logout.
+      }
       await disableAndroidBiometricLogin();
       await clearRefreshToken();
       set({ accessToken: null, user: null, initialized: true, sessionExpired: false });

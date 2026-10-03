@@ -46,7 +46,7 @@ export default function SignInScreen() {
     setError(null);
     try {
       const tokens = await authApi.login({ ...(await getDevice()), email, password });
-      await start(tokens);
+      await start(tokens, true);
       router.replace('/home');
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Connexion impossible. Réessayez.');
@@ -62,7 +62,7 @@ export default function SignInScreen() {
       setError(null);
       try {
         const tokens = await loginWithWebPasskey();
-        await start(tokens);
+        await start(tokens, true);
         router.replace('/home');
       } catch (caught) {
         if (!automatic) {
