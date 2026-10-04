@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     web_push_public_key: str | None = None
     web_push_private_key: str | None = None
     web_push_subject: str | None = None
+    notification_worker_token: str | None = Field(default=None, min_length=32)
     worker_interval_seconds: int = Field(default=60, ge=5, le=3600)
     worker_lease_seconds: int = Field(default=600, ge=30, le=3600)
     metrics_token: str | None = Field(default=None, min_length=32)
@@ -87,6 +88,13 @@ class Settings(BaseSettings):
     @field_validator("metrics_token", mode="before")
     @classmethod
     def disable_blank_metrics_token(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("notification_worker_token", mode="before")
+    @classmethod
+    def disable_blank_notification_worker_token(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value

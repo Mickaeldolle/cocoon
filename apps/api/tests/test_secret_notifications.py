@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.commands import run_reminder_worker as worker
 from app.modules.assistant.models import NotificationOutbox
-from app.modules.auth.models import User, WebPushSubscription
+from app.modules.auth.models import Device, User, WebPushSubscription
 from app.modules.secret.models import SecretNotificationDebounce
 
 
@@ -167,3 +167,111 @@ def test_web_push_requires_consent_and_sends_only_generic_content(
     assert revoked.status_code == 200
     with session_factory() as session:
         assert session.query(WebPushSubscription).count() == 0
+
+
+def test_browser_can_queue_bounded_generic_test_push(client: TestClient, monkeypatch) -> None:
+    headers, user_id = _account(client, "testpush")
+    monkeypatch.setattr(
+        "app.modules.assistant.router.get_settings",
+        lambda: SimpleNamespace(
+            web_push_public_key="public",
+            web_push_private_key="private",
+            web_push_subject="mailto:admin@example.com",
+        ),
+    )
+    test_url = "/api/assistant/notifications/test"
+    assert client.post(test_url, headers=headers).status_code == 403
+    assert client.put(
+        "/api/auth/consents/notifications.push",
+        json={"policy_version": 1, "source": "web"},
+        headers=headers,
+    ).status_code == 200
+    assert client.post(test_url, headers=headers).status_code == 409
+    assert client.put(
+        "/api/auth/web-push/subscription",
+        json={
+            "endpoint": "https://fcm.googleapis.com/fcm/send/test-push",
+            "p256dh": "A" * 80,
+            "auth": "B" * 24,
+        },
+        headers=headers,
+    ).status_code == 204
+
+    for _ in range(5):
+        created = client.post(test_url, headers=headers)
+        assert created.status_code == 201
+        assert created.json()["body"] == "Ceci est une notification de test."
+        assert created.json()["provider_status"] == "pending"
+    assert client.post(test_url, headers=headers).status_code == 429
+    with client.app.state.test_session_factory() as session:
+        items = list(
+            session.scalars(
+                select(NotificationOutbox).where(NotificationOutbox.user_id == UUID(user_id))
+            )
+        )
+        assert len(items) == 5
+        assert all(item.data["kind"] == "notification_test" for item in items)
+        assert len({item.data["device_id"] for item in items}) == 1
+
+
+def test_web_push_test_targets_only_its_browser(client: TestClient, monkeypatch) -> None:
+    _headers, user_id = _account(client, "targetedtest")
+    session_factory = client.app.state.test_session_factory
+    with session_factory() as session:
+        browser = session.scalar(select(Device).where(Device.user_id == UUID(user_id)))
+        assert browser is not None
+        other = Device(
+            user_id=UUID(user_id),
+            installation_id="other-test-device",
+            name="Other device",
+            platform="ios",
+            push_token="ExponentPushToken[other]",
+        )
+        session.add(other)
+        session.flush()
+        session.add_all(
+            [
+                WebPushSubscription(
+                    user_id=UUID(user_id),
+                    device_id=browser.id,
+                    endpoint="https://fcm.googleapis.com/fcm/send/current",
+                    p256dh="A" * 80,
+                    auth="B" * 24,
+                ),
+                WebPushSubscription(
+                    user_id=UUID(user_id),
+                    device_id=other.id,
+                    endpoint="https://fcm.googleapis.com/fcm/send/other",
+                    p256dh="A" * 80,
+                    auth="B" * 24,
+                ),
+                NotificationOutbox(
+                    user_id=UUID(user_id),
+                    dedupe_key="web-push-test:targeted",
+                    title="Cocoon",
+                    body="Ceci est une notification de test.",
+                    data={"kind": "notification_test", "device_id": str(browser.id)},
+                ),
+            ]
+        )
+        session.commit()
+    sent: list[str] = []
+    monkeypatch.setattr(worker, "SessionLocal", session_factory)
+    monkeypatch.setattr(
+        worker,
+        "get_settings",
+        lambda: SimpleNamespace(
+            expo_push_endpoint="https://exp.host/--/api/v2/push/send",
+            web_push_private_key="private",
+            web_push_subject="mailto:admin@example.com",
+        ),
+    )
+    monkeypatch.setattr(
+        worker, "webpush", lambda **kwargs: sent.append(kwargs["subscription_info"]["endpoint"])
+    )
+    def fail_native(*_args, **_kwargs):
+        raise AssertionError("The browser test must not send an Expo push")
+
+    monkeypatch.setattr(worker, "urlopen", fail_native)
+    assert worker.send_pending_notifications(datetime.now(UTC)) == 1
+    assert sent == ["https://fcm.googleapis.com/fcm/send/current"]

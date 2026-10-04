@@ -2,7 +2,7 @@ import { AuditedPressable as Pressable } from '@/src/components/audited-pressabl
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { assistantApi, authApi, type PersonalNotification } from '@/src/services/api';
@@ -56,6 +56,18 @@ export default function NotificationsScreen() {
         error instanceof Error ? error.message : 'Les notifications ne peuvent pas être activées.',
       ),
   });
+  const testPush = useMutation({
+    mutationFn: async () => {
+      await registerForPersonalNotifications(token!);
+      return assistantApi.testNotification(token!);
+    },
+    onSuccess: () => {
+      setNotice('Notification test créée. Elle sera envoyée au prochain passage planifié.');
+      void client.invalidateQueries({ queryKey: ['personal', 'notifications', userId] });
+    },
+    onError: (error) =>
+      setNotice(error instanceof Error ? error.message : 'Le test de notification a échoué.'),
+  });
   const revoke = useMutation({
     mutationFn: () => authApi.revokeConsent(token!, 'notifications.push'),
     onSuccess: () => {
@@ -104,6 +116,19 @@ export default function NotificationsScreen() {
             {register.isPending ? 'Activation…' : 'Activer les notifications'}
           </Text>
         </Pressable>
+        {Platform.OS === 'web' ? (
+          <Pressable
+            auditAction="notifications.test"
+            accessibilityRole="button"
+            disabled={!token || testPush.isPending || register.isPending}
+            onPress={() => testPush.mutate()}
+            style={[styles.testAction, testPush.isPending && styles.disabled]}
+          >
+            <Text style={styles.testActionText}>
+              {testPush.isPending ? 'Préparation du test…' : 'Envoyer une notification test'}
+            </Text>
+          </Pressable>
+        ) : null}
         {confirmingDisable ? (
           <View style={styles.confirmation}>
             <Text style={styles.confirmationText}>
@@ -241,6 +266,8 @@ function makeStyles(colors: ColorTokens) {
       minHeight: 48,
     },
     enableText: { color: colors.white, fontWeight: '800' },
+    testAction: { justifyContent: 'center', minHeight: 44, marginTop: 8 },
+    testActionText: { color: colors.spruce, fontWeight: '800', textAlign: 'center' },
     disableLink: { justifyContent: 'center', minHeight: 44, marginTop: 4 },
     disableLinkText: { color: colors.berry, fontWeight: '800', textAlign: 'center' },
     confirmation: {

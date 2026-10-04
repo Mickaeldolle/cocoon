@@ -860,6 +860,11 @@ export const assistantApi = {
     ),
   listNotifications: (accessToken: string) =>
     call<PersonalNotification[]>('/api/assistant/notifications', withAccessToken(accessToken)),
+  testNotification: (accessToken: string) =>
+    call<PersonalNotification>(
+      '/api/assistant/notifications/test',
+      withAccessToken(accessToken, { method: 'POST' }),
+    ),
   markNotificationRead: (accessToken: string, notificationId: string) =>
     call<PersonalNotification>(
       `/api/assistant/notifications/${notificationId}/read`,

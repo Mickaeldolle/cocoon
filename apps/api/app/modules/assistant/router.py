@@ -3,14 +3,14 @@ import json
 import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -85,8 +85,13 @@ from app.modules.assistant.service import (
 from app.modules.assistant.voice import MAX_VOICE_BYTES, SUPPORTED_AUDIO_TYPES, transcribe_audio
 from app.modules.audit.service import note_request_details
 from app.modules.auth.consents import require_active_consent
-from app.modules.auth.dependencies import get_current_user, require_assistant_enabled
-from app.modules.auth.models import User
+from app.modules.auth.dependencies import (
+    AuthenticatedSession,
+    get_authenticated_session,
+    get_current_user,
+    require_assistant_enabled,
+)
+from app.modules.auth.models import User, WebPushSubscription
 from app.modules.memory.context import accessible_memory_summary_keys
 from app.modules.personal.models import PersonalTask
 
@@ -852,6 +857,60 @@ def list_notifications(
         .limit(100)
     )
     return [notification_response(item) for item in items]
+
+
+@router.post(
+    "/notifications/test",
+    response_model=NotificationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_test_notification(
+    authenticated: AuthenticatedSession = Depends(get_authenticated_session),
+    session: Session = Depends(get_session),
+) -> NotificationResponse:
+    """Queue a generic push for the current user's browser through the normal worker."""
+    current_user = authenticated.user
+    device = authenticated.user_session.device
+    if device.platform != "web":
+        raise HTTPException(status_code=400, detail="Test réservé au navigateur.")
+    settings = get_settings()
+    if not all((settings.web_push_public_key, settings.web_push_private_key)) or not (
+        settings.web_push_subject or ""
+    ).startswith(("mailto:", "https://")):
+        raise HTTPException(status_code=503, detail="Configuration VAPID incomplète ou invalide.")
+    require_active_consent(session, current_user.id, "notifications.push")
+    if session.scalar(
+        select(WebPushSubscription.id)
+        .where(
+            WebPushSubscription.user_id == current_user.id,
+            WebPushSubscription.device_id == device.id,
+        )
+        .limit(1)
+    ) is None:
+        raise HTTPException(
+            status_code=409, detail="Activez d'abord les notifications du navigateur."
+        )
+    now = datetime.now(UTC)
+    recent_tests = session.scalar(
+        select(func.count(NotificationOutbox.id)).where(
+            NotificationOutbox.user_id == current_user.id,
+            NotificationOutbox.dedupe_key.startswith("web-push-test:"),
+            NotificationOutbox.created_at >= now - timedelta(hours=1),
+        )
+    )
+    if recent_tests is not None and recent_tests >= 5:
+        raise HTTPException(status_code=429, detail="Limite de cinq tests par heure atteinte.")
+    item = NotificationOutbox(
+        user_id=current_user.id,
+        dedupe_key=f"web-push-test:{uuid4()}",
+        title="Cocoon",
+        body="Ceci est une notification de test.",
+        data={"kind": "notification_test", "device_id": str(device.id)},
+    )
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return notification_response(item)
 
 
 @router.post("/notifications/{notification_id}/read", response_model=NotificationResponse)

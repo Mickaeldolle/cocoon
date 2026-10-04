@@ -52,6 +52,7 @@ ALLOWED_BUTTON_ACTIONS = {
     "memory.forget.confirm",
     "notifications.back",
     "notifications.enable",
+    "notifications.test",
     "notifications.disable.cancel",
     "notifications.disable.confirm",
     "notifications.disable.prompt",

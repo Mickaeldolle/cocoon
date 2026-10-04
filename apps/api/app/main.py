@@ -14,6 +14,7 @@ from app.core.database import engine
 from app.core.metrics import RuntimeMetrics
 from app.modules.admin.router import router as admin_router
 from app.modules.assistant.router import router as assistant_router
+from app.modules.assistant.worker_router import router as notification_worker_router
 from app.modules.audit.router import router as audit_router
 from app.modules.audit.service import record_request
 from app.modules.auth.router import router as auth_router
@@ -153,6 +154,7 @@ app.include_router(auth_router)
 app.include_router(audit_router)
 app.include_router(admin_router)
 app.include_router(assistant_router)
+app.include_router(notification_worker_router)
 app.include_router(personal_router)
 app.include_router(neural_router)
 app.include_router(memory_router)

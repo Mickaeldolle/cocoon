@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from pywebpush import WebPushException, webpush
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
@@ -97,6 +97,10 @@ def queue_pending_notifications(now: datetime) -> int:
     """Persist due occurrences before attempting delivery; safe to rerun after downtime."""
     queued = 0
     with SessionLocal() as session:
+        if session.get_bind().dialect.name == "postgresql" and not session.scalar(
+            text("SELECT pg_try_advisory_xact_lock(2649223720952391121)")
+        ):
+            return 0
         tasks = session.scalars(
             select(PersonalTask).where(
                 PersonalTask.completed.is_(False),
@@ -264,15 +268,19 @@ def _attach_ticket_devices(ticket: object, devices: list[Device]) -> object:
     return {**ticket, "data": data}
 
 
-def send_pending_notifications(now: datetime) -> int:
+def send_pending_notifications(now: datetime, *, max_items: int | None = None) -> int:
     settings = get_settings()
     worker_id = f"reminder-worker-{uuid4()}"
     sent = 0
+    processed = 0
     while True:
+        if max_items is not None and processed >= max_items:
+            break
         with SessionLocal() as session:
             item = _claim_one(session, worker_id, now)
             if item is None:
                 break
+            processed += 1
             session.refresh(item)
             if item.cancelled_at is not None:
                 continue
@@ -295,6 +303,13 @@ def send_pending_notifications(now: datetime) -> int:
                     select(WebPushSubscription).where(WebPushSubscription.user_id == item.user_id)
                 )
             )
+            if item.data.get("kind") == "notification_test":
+                tokens = []
+                subscriptions = [
+                    subscription
+                    for subscription in subscriptions
+                    if str(subscription.device_id) == item.data.get("device_id")
+                ]
             if not tokens and not subscriptions:
                 _finish(session, item.id, worker_id, now, error="no_device")
                 continue
@@ -437,11 +452,11 @@ def refresh_provider_receipts(now: datetime) -> int:
     return updated
 
 
-def process_once() -> tuple[int, int]:
+def process_once(*, max_items: int | None = None) -> tuple[int, int]:
     now = datetime.now(UTC)
     queued = queue_pending_notifications(now)
     refresh_provider_receipts(now)
-    return queued, send_pending_notifications(now)
+    return queued, send_pending_notifications(now, max_items=max_items)
 
 
 def main() -> None:

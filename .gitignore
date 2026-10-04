@@ -28,7 +28,3 @@ Thumbs.db
 .idea/
 .vscode/
 hermes-agent/
-
-docs/*
-!docs/llm.md
-!docs/SECRET_NOTIFICATIONS.md

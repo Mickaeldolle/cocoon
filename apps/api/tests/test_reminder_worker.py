@@ -8,6 +8,35 @@ from app.modules.assistant.models import AssistantPreference, NotificationOutbox
 from app.modules.auth.models import Device, User
 
 
+def test_bounded_notification_run_leaves_remaining_items_for_next_run(
+    client: TestClient, monkeypatch
+) -> None:
+    user_id = _user(client)
+    session_factory = client.app.state.test_session_factory
+    with session_factory() as session:
+        for number in range(2):
+            session.add(
+                NotificationOutbox(
+                    user_id=user_id,
+                    dedupe_key=f"bounded-test:{number}",
+                    title="Cocoon",
+                    body="Test",
+                    data={"kind": "notification_test"},
+                )
+            )
+        session.commit()
+    monkeypatch.setattr(worker, "SessionLocal", session_factory)
+    now = datetime.now(UTC)
+    assert worker.send_pending_notifications(now, max_items=1) == 0
+    with session_factory() as session:
+        items = list(session.query(NotificationOutbox).all())
+        assert sum(item.failed_at is not None for item in items) == 1
+        assert sum(item.failed_at is None for item in items) == 1
+    assert worker.send_pending_notifications(now, max_items=1) == 0
+    with session_factory() as session:
+        assert all(item.failed_at is not None for item in session.query(NotificationOutbox).all())
+
+
 def _user(client: TestClient):
     client.post(
         "/api/auth/register",
