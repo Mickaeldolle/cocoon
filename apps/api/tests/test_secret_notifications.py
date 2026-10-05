@@ -332,6 +332,44 @@ def test_web_push_test_targets_only_its_browser(client: TestClient, monkeypatch)
     assert sent == ["https://fcm.googleapis.com/fcm/send/current"]
 
 
+def test_read_notification_is_hidden_on_next_list_load(client: TestClient) -> None:
+    headers, user_id = _account(client, "readnotification")
+    session_factory = client.app.state.test_session_factory
+    with session_factory() as session:
+        first = NotificationOutbox(
+            user_id=UUID(user_id),
+            dedupe_key="read-test:first",
+            title="Cocoon",
+            body="Premier rappel",
+            data={"kind": "reminder"},
+        )
+        second = NotificationOutbox(
+            user_id=UUID(user_id),
+            dedupe_key="read-test:second",
+            title="Cocoon",
+            body="Deuxième rappel",
+            data={"kind": "reminder"},
+        )
+        session.add_all([first, second])
+        session.commit()
+        first_id = first.id
+        second_id = second.id
+
+    list_url = "/api/assistant/notifications"
+    assert {item["id"] for item in client.get(list_url, headers=headers).json()} == {
+        str(first_id),
+        str(second_id),
+    }
+    read = client.post(f"{list_url}/{first_id}/read", headers=headers)
+    assert read.status_code == 200
+    assert read.json()["read_at"] is not None
+    assert [item["id"] for item in client.get(list_url, headers=headers).json()] == [
+        str(second_id)
+    ]
+    with session_factory() as session:
+        assert session.get(NotificationOutbox, first_id).read_at is not None
+
+
 def test_android_can_send_immediate_test_push(client: TestClient, monkeypatch) -> None:
     registered = client.post(
         "/api/auth/register",

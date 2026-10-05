@@ -37,6 +37,7 @@ export default function NotificationsScreen() {
     queryKey: ['personal', 'notifications', userId],
     enabled: Boolean(token),
     queryFn: () => assistantApi.listNotifications(token!),
+    refetchOnMount: 'always',
     retry: false,
   });
   const markRead = useMutation({
