@@ -2,7 +2,7 @@ import { AuditedPressable as Pressable } from '@/src/components/audited-pressabl
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { assistantApi, authApi, type PersonalNotification } from '@/src/services/api';
@@ -61,8 +61,12 @@ export default function NotificationsScreen() {
       await registerForPersonalNotifications(token!);
       return assistantApi.testNotification(token!);
     },
-    onSuccess: () => {
-      setNotice('Notification test créée. Elle sera envoyée au prochain passage planifié.');
+    onSuccess: (notification) => {
+      setNotice(
+        notification.provider_status === 'accepted'
+          ? 'Notification test transmise à votre appareil.'
+          : 'L’envoi immédiat a échoué. Vérifiez la configuration des notifications sur l’API.',
+      );
       void client.invalidateQueries({ queryKey: ['personal', 'notifications', userId] });
     },
     onError: (error) =>
@@ -116,19 +120,17 @@ export default function NotificationsScreen() {
             {register.isPending ? 'Activation…' : 'Activer les notifications'}
           </Text>
         </Pressable>
-        {Platform.OS === 'web' ? (
-          <Pressable
-            auditAction="notifications.test"
-            accessibilityRole="button"
-            disabled={!token || testPush.isPending || register.isPending}
-            onPress={() => testPush.mutate()}
-            style={[styles.testAction, testPush.isPending && styles.disabled]}
-          >
-            <Text style={styles.testActionText}>
-              {testPush.isPending ? 'Préparation du test…' : 'Envoyer une notification test'}
-            </Text>
-          </Pressable>
-        ) : null}
+        <Pressable
+          auditAction="notifications.test"
+          accessibilityRole="button"
+          disabled={!token || testPush.isPending || register.isPending}
+          onPress={() => testPush.mutate()}
+          style={[styles.testAction, testPush.isPending && styles.disabled]}
+        >
+          <Text style={styles.testActionText}>
+            {testPush.isPending ? 'Préparation du test…' : 'Envoyer une notification test'}
+          </Text>
+        </Pressable>
         {confirmingDisable ? (
           <View style={styles.confirmation}>
             <Text style={styles.confirmationText}>

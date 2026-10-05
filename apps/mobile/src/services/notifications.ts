@@ -75,12 +75,21 @@ export async function registerForPersonalNotifications(accessToken: string): Pro
     const key = new Uint8Array(decoded.length);
     for (let index = 0; index < decoded.length; index += 1) key[index] = decoded.charCodeAt(index);
     const registration = await navigator.serviceWorker.register('/sw.js');
-    const subscription =
-      (await registration.pushManager.getSubscription()) ??
-      (await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: key,
-      }));
+    let subscription = await registration.pushManager.getSubscription();
+    const previousKey = subscription?.options.applicationServerKey;
+    if (
+      subscription &&
+      (!previousKey ||
+        previousKey.byteLength !== key.byteLength ||
+        new Uint8Array(previousKey).some((value, index) => value !== key[index]))
+    ) {
+      await subscription.unsubscribe();
+      subscription = null;
+    }
+    subscription ??= await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: key,
+    });
     const serialized = subscription.toJSON();
     if (!serialized.endpoint || !serialized.keys?.p256dh || !serialized.keys.auth) {
       throw new Error('Le navigateur n’a pas créé un abonnement de notification valide.');
@@ -100,6 +109,15 @@ export async function registerForPersonalNotifications(accessToken: string): Pro
     );
   }
 
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('personal-reminders', {
+      name: 'Rappels personnels',
+      importance: Notifications.AndroidImportance.DEFAULT,
+      vibrationPattern: [0, 250],
+      sound: undefined,
+    });
+  }
+
   const current = await Notifications.getPermissionsAsync();
   const permissions =
     current.status === 'granted'
@@ -109,15 +127,6 @@ export async function registerForPersonalNotifications(accessToken: string): Pro
         });
   if (permissions.status !== 'granted') {
     throw new Error('La permission de notification est refusée. Activez-la dans les réglages.');
-  }
-
-  if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('personal-reminders', {
-      name: 'Rappels personnels',
-      importance: Notifications.AndroidImportance.DEFAULT,
-      vibrationPattern: [0, 250],
-      sound: undefined,
-    });
   }
 
   const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;

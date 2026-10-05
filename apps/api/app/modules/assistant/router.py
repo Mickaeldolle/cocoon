@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.commands.run_reminder_worker import send_pending_notifications
 from app.core.config import get_settings
 from app.core.database import get_session
 from app.modules.assistant.context import (
@@ -96,6 +98,7 @@ from app.modules.memory.context import accessible_memory_summary_keys
 from app.modules.personal.models import PersonalTask
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
+notification_logger = logging.getLogger("cocoon.assistant.notifications")
 _active_stream_turns: set[tuple[UUID, str]] = set()
 _active_stream_turns_lock = threading.Lock()
 
@@ -868,28 +871,31 @@ def create_test_notification(
     authenticated: AuthenticatedSession = Depends(get_authenticated_session),
     session: Session = Depends(get_session),
 ) -> NotificationResponse:
-    """Queue a generic push for the current user's browser through the normal worker."""
+    """Send a generic push to the current device without a scheduler."""
     current_user = authenticated.user
     device = authenticated.user_session.device
-    if device.platform != "web":
-        raise HTTPException(status_code=400, detail="Test réservé au navigateur.")
-    settings = get_settings()
-    if not all((settings.web_push_public_key, settings.web_push_private_key)) or not (
-        settings.web_push_subject or ""
-    ).startswith(("mailto:", "https://")):
-        raise HTTPException(status_code=503, detail="Configuration VAPID incomplète ou invalide.")
     require_active_consent(session, current_user.id, "notifications.push")
-    if session.scalar(
-        select(WebPushSubscription.id)
-        .where(
-            WebPushSubscription.user_id == current_user.id,
-            WebPushSubscription.device_id == device.id,
-        )
-        .limit(1)
-    ) is None:
-        raise HTTPException(
-            status_code=409, detail="Activez d'abord les notifications du navigateur."
-        )
+    if device.platform == "web":
+        settings = get_settings()
+        if not all((settings.web_push_public_key, settings.web_push_private_key)) or not (
+            settings.web_push_subject or ""
+        ).startswith(("mailto:", "https://")):
+            raise HTTPException(
+                status_code=503, detail="Configuration VAPID incomplète ou invalide."
+            )
+        if session.scalar(
+            select(WebPushSubscription.id)
+            .where(
+                WebPushSubscription.user_id == current_user.id,
+                WebPushSubscription.device_id == device.id,
+            )
+            .limit(1)
+        ) is None:
+            raise HTTPException(
+                status_code=409, detail="Activez d'abord les notifications du navigateur."
+            )
+    elif not device.push_token:
+        raise HTTPException(status_code=409, detail="Activez d'abord les notifications mobiles.")
     now = datetime.now(UTC)
     recent_tests = session.scalar(
         select(func.count(NotificationOutbox.id)).where(
@@ -909,6 +915,10 @@ def create_test_notification(
     )
     session.add(item)
     session.commit()
+    try:
+        send_pending_notifications(datetime.now(UTC), max_items=1, item_id=item.id)
+    except Exception:
+        notification_logger.exception("notification_test_dispatch_failed")
     session.refresh(item)
     return notification_response(item)
 

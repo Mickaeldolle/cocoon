@@ -1,6 +1,7 @@
-from datetime import UTC, datetime, timedelta
+import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -34,7 +35,7 @@ def _account(client: TestClient, name: str) -> tuple[dict[str, str], str]:
     }, client.get("/api/auth/me", headers=basic).json()["id"]
 
 
-def test_secret_push_waits_for_quiet_period_and_is_cancelled_on_visit(
+def test_secret_push_is_sent_immediately_and_is_idempotent(
     client: TestClient, monkeypatch
 ) -> None:
     sender, sender_id = _account(client, "sender")
@@ -54,34 +55,60 @@ def test_secret_push_waits_for_quiet_period_and_is_cancelled_on_visit(
         f"/api/secret/conversations/{conversation_id}/accept", headers=recipient
     ).status_code == 200
     messages_url = f"/api/secret/conversations/{conversation_id}/messages"
-
-    first = client.post(messages_url, json={"body": "Premier message"}, headers=sender)
-    assert first.status_code == 201
-    with session_factory() as session:
-        first_due = session.get(SecretNotificationDebounce, UUID(recipient_id)).due_at
-
-    second = client.post(messages_url, json={"body": "Deuxième message"}, headers=sender)
-    assert second.status_code == 201
-    with session_factory() as session:
-        pending = session.get(SecretNotificationDebounce, UUID(recipient_id))
-        assert pending is not None
-        assert pending.due_at > first_due
-        assert session.query(SecretNotificationDebounce).count() == 1
-        due = pending.due_at.replace(tzinfo=UTC)
-
+    assert client.put(
+        "/api/auth/consents/notifications.push",
+        json={"policy_version": 1, "source": "web"},
+        headers=recipient,
+    ).status_code == 200
+    assert client.put(
+        "/api/auth/web-push/subscription",
+        json={
+            "endpoint": "https://fcm.googleapis.com/fcm/send/secret-recipient",
+            "p256dh": "A" * 80,
+            "auth": "B" * 24,
+        },
+        headers=recipient,
+    ).status_code == 204
+    sent_payloads: list[dict] = []
     monkeypatch.setattr(worker, "SessionLocal", session_factory)
-    assert worker.queue_pending_notifications(first_due.replace(tzinfo=UTC)) == 0
-    assert worker.queue_pending_notifications(due - timedelta(microseconds=1)) == 0
-    assert worker.queue_pending_notifications(due) == 1
-    assert worker.queue_pending_notifications(due + timedelta(minutes=1)) == 0
+    monkeypatch.setattr(
+        worker,
+        "get_settings",
+        lambda: SimpleNamespace(
+            expo_push_endpoint="https://exp.host/--/api/v2/push/send",
+            web_push_private_key="private",
+            web_push_subject="mailto:admin@example.com",
+        ),
+    )
+    monkeypatch.setattr(worker, "webpush", lambda **kwargs: sent_payloads.append(kwargs))
+
+    message_id = str(uuid4())
+    first = client.post(
+        messages_url,
+        json={"body": "Premier message", "client_message_id": message_id},
+        headers=sender,
+    )
+    assert first.status_code == 201
+    assert len(sent_payloads) == 1
+    assert "Premier message" not in sent_payloads[0]["data"]
+    assert str(conversation_id) not in sent_payloads[0]["data"]
     with session_factory() as session:
         alert = session.scalar(
             select(NotificationOutbox).where(NotificationOutbox.user_id == UUID(recipient_id))
         )
         assert alert is not None
         assert alert.body == "Votre assistant a du nouveau pour vous."
+        assert alert.sent_at is not None
         assert str(conversation_id) not in str(alert.data)
         assert session.get(SecretNotificationDebounce, UUID(recipient_id)) is None
+
+    retry = client.post(
+        messages_url,
+        json={"body": "Premier message", "client_message_id": message_id},
+        headers=sender,
+    )
+    assert retry.status_code == 201
+    assert len(sent_payloads) == 1
 
     # A normal page must not reveal that a hidden conversation generated the push.
     assert client.get("/api/assistant/notifications", headers=recipient).json() == []
@@ -92,20 +119,33 @@ def test_secret_push_waits_for_quiet_period_and_is_cancelled_on_visit(
         alert = session.scalar(
             select(NotificationOutbox).where(NotificationOutbox.user_id == UUID(recipient_id))
         )
-        assert alert.cancelled_at is not None
+        assert alert.cancelled_at is None
 
     assert client.get(messages_url, headers=recipient).status_code == 200
     listed = client.get("/api/secret/conversations", headers=recipient)
     assert listed.json()[0]["has_unread_messages"] is False
 
+    second = client.post(messages_url, json={"body": "Deuxième message"}, headers=sender)
+    assert second.status_code == 201
+    assert len(sent_payloads) == 2
+
+    def unavailable_push(**_kwargs) -> None:
+        raise ValueError("provider unavailable")
+
+    monkeypatch.setattr(worker, "webpush", unavailable_push)
     third = client.post(messages_url, json={"body": "Troisième message"}, headers=sender)
     assert third.status_code == 201
     with session_factory() as session:
-        pending = session.get(SecretNotificationDebounce, UUID(recipient_id))
-        assert pending is not None
-        later_due = pending.due_at.replace(tzinfo=UTC)
-    assert client.get(messages_url, headers=recipient).status_code == 200
-    assert worker.queue_pending_notifications(later_due + timedelta(seconds=1)) == 0
+        failed_attempt = session.scalar(
+            select(NotificationOutbox).where(
+                NotificationOutbox.user_id == UUID(recipient_id),
+                NotificationOutbox.dedupe_key == (
+                    f"secret-nudge:{third.json()['id']}:{recipient_id}"
+                ),
+            )
+        )
+        assert failed_attempt is not None
+        assert failed_attempt.provider_status == "retrying"
 
 
 def test_web_push_requires_consent_and_sends_only_generic_content(
@@ -169,7 +209,9 @@ def test_web_push_requires_consent_and_sends_only_generic_content(
         assert session.query(WebPushSubscription).count() == 0
 
 
-def test_browser_can_queue_bounded_generic_test_push(client: TestClient, monkeypatch) -> None:
+def test_browser_sends_bounded_generic_test_push_immediately(
+    client: TestClient, monkeypatch
+) -> None:
     headers, user_id = _account(client, "testpush")
     monkeypatch.setattr(
         "app.modules.assistant.router.get_settings",
@@ -196,12 +238,25 @@ def test_browser_can_queue_bounded_generic_test_push(client: TestClient, monkeyp
         },
         headers=headers,
     ).status_code == 204
+    sent_payloads: list[dict] = []
+    monkeypatch.setattr(worker, "SessionLocal", client.app.state.test_session_factory)
+    monkeypatch.setattr(
+        worker,
+        "get_settings",
+        lambda: SimpleNamespace(
+            expo_push_endpoint="https://exp.host/--/api/v2/push/send",
+            web_push_private_key="private",
+            web_push_subject="mailto:admin@example.com",
+        ),
+    )
+    monkeypatch.setattr(worker, "webpush", lambda **kwargs: sent_payloads.append(kwargs))
 
     for _ in range(5):
         created = client.post(test_url, headers=headers)
         assert created.status_code == 201
         assert created.json()["body"] == "Ceci est une notification de test."
-        assert created.json()["provider_status"] == "pending"
+        assert created.json()["provider_status"] == "accepted"
+    assert len(sent_payloads) == 5
     assert client.post(test_url, headers=headers).status_code == 429
     with client.app.state.test_session_factory() as session:
         items = list(
@@ -275,3 +330,77 @@ def test_web_push_test_targets_only_its_browser(client: TestClient, monkeypatch)
     monkeypatch.setattr(worker, "urlopen", fail_native)
     assert worker.send_pending_notifications(datetime.now(UTC)) == 1
     assert sent == ["https://fcm.googleapis.com/fcm/send/current"]
+
+
+def test_android_can_send_immediate_test_push(client: TestClient, monkeypatch) -> None:
+    registered = client.post(
+        "/api/auth/register",
+        json={
+            "email": "androidtest@example.com",
+            "display_name": "Android test",
+            "password": "une-phrase-de-passe-solide",
+            "installation_id": "android-notification-test-device",
+            "name": "Android",
+            "platform": "android",
+        },
+    )
+    assert registered.status_code == 201
+    headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+    test_url = "/api/assistant/notifications/test"
+    assert client.post(test_url, headers=headers).status_code == 403
+    assert client.put(
+        "/api/auth/consents/notifications.push",
+        json={"policy_version": 1, "source": "mobile"},
+        headers=headers,
+    ).status_code == 200
+    assert client.post(test_url, headers=headers).status_code == 409
+    assert client.put(
+        "/api/auth/push-token",
+        json={"push_token": "ExpoPushToken[android-test]"},
+        headers=headers,
+    ).status_code == 204
+
+    class PushResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return b'{"data":[{"status":"ok","id":"ticket-1"}]}'
+
+    sent_payloads: list[dict] = []
+
+    def fake_urlopen(request, *, timeout):
+        assert timeout == 10
+        sent_payloads.extend(json.loads(request.data))
+        return PushResponse()
+
+    monkeypatch.setattr(worker, "SessionLocal", client.app.state.test_session_factory)
+    monkeypatch.setattr(worker, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        worker,
+        "get_settings",
+        lambda: SimpleNamespace(
+            expo_push_endpoint="https://exp.host/--/api/v2/push/send",
+            web_push_private_key=None,
+            web_push_subject=None,
+        ),
+    )
+    response = client.post(test_url, headers=headers)
+    assert response.status_code == 201
+    assert response.json()["provider_status"] == "accepted"
+    assert len(sent_payloads) == 1
+    assert sent_payloads[0]["to"] == "ExpoPushToken[android-test]"
+
+    class RejectedResponse(PushResponse):
+        def read(self) -> bytes:
+            return b'{"data":[{"status":"error","details":{"error":"InvalidCredentials"}}]}'
+
+    monkeypatch.setattr(worker, "urlopen", lambda *_args, **_kwargs: RejectedResponse())
+    rejected = client.post(test_url, headers=headers)
+    assert rejected.status_code == 201
+    assert rejected.json()["provider_status"] == "retrying"

@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -24,6 +25,7 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
+from app.commands.run_reminder_worker import send_pending_notifications
 from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.security import create_refresh_token, hash_refresh_token, verify_password
@@ -74,10 +76,11 @@ from app.modules.conversations.schemas import (
     MessageCreate,
     MessageResponse,
 )
-from app.modules.secret.notifications import clear_secret_nudge, schedule_secret_nudges
+from app.modules.secret.notifications import clear_secret_nudge, queue_secret_nudges
 from app.modules.secret.typing import secret_typing
 
 router = APIRouter(prefix="/api/secret", tags=["secret"])
+notification_logger = logging.getLogger("cocoon.secret.notifications")
 
 
 class SecretTypingRequest(BaseModel):
@@ -842,7 +845,7 @@ def send_secret_message(
     session.add(message)
     try:
         session.flush()
-        schedule_secret_nudges(session, conversation_id, user_id)
+        alert_ids = queue_secret_nudges(session, conversation_id, user_id, message.id)
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -857,5 +860,10 @@ def send_secret_message(
         return message_response(existing, [membership])
     session.refresh(message)
     secret_typing.update(conversation_id, user_id, False)
-    # Secret conversations intentionally have no realtime broadcast or notification in this phase.
+    for alert_id in alert_ids:
+        try:
+            send_pending_notifications(datetime.now(UTC), max_items=1, item_id=alert_id)
+        except Exception:
+            # The message is already committed; push failure must not make the client resend it.
+            notification_logger.exception("secret_push_dispatch_failed")
     return message_response(message, [membership])

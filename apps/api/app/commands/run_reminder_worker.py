@@ -2,6 +2,7 @@
 
 import calendar
 import json
+import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as clock_time
@@ -19,11 +20,11 @@ from app.modules.assistant.models import AssistantPreference, NotificationOutbox
 from app.modules.auth.models import Device, WebPushSubscription
 from app.modules.auth.web_push import valid_web_push_endpoint
 from app.modules.personal.models import PersonalTask
-from app.modules.secret.models import SecretNotificationDebounce
 
 MAX_CATCH_UP_OCCURRENCES = 12
 LEASE_SECONDS = 600
 RETRY_BASE_SECONDS = 30
+notification_logger = logging.getLogger("cocoon.notifications")
 
 
 def add_months(value: date, months: int) -> date:
@@ -166,29 +167,14 @@ def queue_pending_notifications(now: datetime) -> int:
                 queued += _add_outbox(
                     session, user_id=preference.user_id, key=key, kind="daily_brief", now=now
                 )
-        pending_nudges = session.scalars(
-            select(SecretNotificationDebounce)
-            .where(SecretNotificationDebounce.due_at <= now)
-            .with_for_update(skip_locked=True)
-        ).all()
-        for pending in pending_nudges:
-            if _add_outbox(
-                session,
-                user_id=pending.user_id,
-                key=f"secret-nudge:{uuid4()}",
-                kind="assistant_update",
-                body="Votre assistant a du nouveau pour vous.",
-                now=now,
-                enforce_quota=False,
-            ):
-                queued += 1
-                session.delete(pending)
         session.commit()
     return queued
 
 
-def _claim_one(session, worker_id: str, now: datetime) -> NotificationOutbox | None:
-    item = session.scalar(
+def _claim_one(
+    session, worker_id: str, now: datetime, *, item_id: UUID | None = None
+) -> NotificationOutbox | None:
+    query = (
         select(NotificationOutbox)
         .where(
             NotificationOutbox.sent_at.is_(None),
@@ -204,6 +190,9 @@ def _claim_one(session, worker_id: str, now: datetime) -> NotificationOutbox | N
         .with_for_update(skip_locked=True)
         .limit(1)
     )
+    if item_id is not None:
+        query = query.where(NotificationOutbox.id == item_id)
+    item = session.scalar(query)
     if item is None:
         return None
     item.lease_owner = worker_id
@@ -268,7 +257,9 @@ def _attach_ticket_devices(ticket: object, devices: list[Device]) -> object:
     return {**ticket, "data": data}
 
 
-def send_pending_notifications(now: datetime, *, max_items: int | None = None) -> int:
+def send_pending_notifications(
+    now: datetime, *, max_items: int | None = None, item_id: UUID | None = None
+) -> int:
     settings = get_settings()
     worker_id = f"reminder-worker-{uuid4()}"
     sent = 0
@@ -277,18 +268,12 @@ def send_pending_notifications(now: datetime, *, max_items: int | None = None) -
         if max_items is not None and processed >= max_items:
             break
         with SessionLocal() as session:
-            item = _claim_one(session, worker_id, now)
+            item = _claim_one(session, worker_id, now, item_id=item_id)
             if item is None:
                 break
             processed += 1
             session.refresh(item)
             if item.cancelled_at is not None:
-                continue
-            if item.dedupe_key.startswith("secret-nudge:") and session.get(
-                SecretNotificationDebounce, item.user_id
-            ) is not None:
-                item.cancelled_at = now
-                session.commit()
                 continue
             devices = list(
                 session.scalars(
@@ -297,19 +282,21 @@ def send_pending_notifications(now: datetime, *, max_items: int | None = None) -
                     )
                 )
             )
-            tokens = [device.push_token for device in devices]
             subscriptions = list(
                 session.scalars(
                     select(WebPushSubscription).where(WebPushSubscription.user_id == item.user_id)
                 )
             )
             if item.data.get("kind") == "notification_test":
-                tokens = []
+                devices = [
+                    device for device in devices if str(device.id) == item.data.get("device_id")
+                ]
                 subscriptions = [
                     subscription
                     for subscription in subscriptions
                     if str(subscription.device_id) == item.data.get("device_id")
                 ]
+            tokens = [device.push_token for device in devices]
             if not tokens and not subscriptions:
                 _finish(session, item.id, worker_id, now, error="no_device")
                 continue
@@ -339,10 +326,35 @@ def send_pending_notifications(now: datetime, *, max_items: int | None = None) -
                         raw = response.read()
                         ticket = json.loads(raw.decode("utf-8")) if raw else None
                     _disable_invalid_tokens(session, tokens, ticket)
+                    results = ticket.get("data") if isinstance(ticket, dict) else None
+                    accepted = isinstance(results, list) and any(
+                        isinstance(result, dict) and result.get("status") == "ok"
+                        for result in results
+                    )
+                    if not accepted:
+                        error_codes = [
+                            result.get("details", {}).get("error")
+                            for result in results or []
+                            if isinstance(result, dict)
+                            and isinstance(result.get("details"), dict)
+                        ]
+                        safe_code = next(
+                            (
+                                code
+                                for code in error_codes
+                                if isinstance(code, str) and len(code) <= 64 and code.isidentifier()
+                            ),
+                            "unknown",
+                        )
+                        notification_logger.warning("expo_push_rejected error=%s", safe_code)
                     ticket = _attach_ticket_devices(ticket, devices)
-                    delivered = True
-                except (HTTPError, URLError, TimeoutError, ValueError):
-                    pass
+                    delivered = bool(accepted)
+                except (HTTPError, URLError, TimeoutError, ValueError) as error:
+                    notification_logger.warning(
+                        "expo_push_failed error_type=%s status=%s",
+                        type(error).__name__,
+                        getattr(error, "code", None),
+                    )
             if settings.web_push_private_key and settings.web_push_subject:
                 for subscription in subscriptions:
                     try:
@@ -364,10 +376,16 @@ def send_pending_notifications(now: datetime, *, max_items: int | None = None) -
                         )
                         delivered = True
                     except WebPushException as error:
-                        if error.response is not None and error.response.status_code in {404, 410}:
+                        status_code = (
+                            error.response.status_code if error.response is not None else None
+                        )
+                        notification_logger.warning("web_push_failed status=%s", status_code)
+                        if status_code in {404, 410}:
                             session.delete(subscription)
-                    except (OSError, ValueError):
-                        pass
+                    except (OSError, ValueError) as error:
+                        notification_logger.warning(
+                            "web_push_failed error_type=%s", type(error).__name__
+                        )
             if _finish(
                 session,
                 item.id,
