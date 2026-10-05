@@ -408,6 +408,9 @@ test('session bootstrap waits for biometric confirmation before refreshing', asy
       isAndroidBiometricLoginEnabled: async () => true,
       disableAndroidBiometricLogin: async () => undefined,
     },
+    '@/src/services/notifications': {
+      unsubscribeCurrentWebPush: async () => undefined,
+    },
     '@/src/services/api': {
       loadRefreshToken: async () => {
         refreshRead = true;
@@ -441,6 +444,9 @@ test('expired refresh token clears the session for login and passkey recovery', 
     },
     '@/src/services/android-biometric-login': {
       isAndroidBiometricLoginEnabled: async () => false,
+    },
+    '@/src/services/notifications': {
+      unsubscribeCurrentWebPush: async () => undefined,
     },
     '@/src/services/api': {
       ApiError,
@@ -484,6 +490,9 @@ test('concurrent expired requests share one refresh token rotation', async () =>
       },
     },
     '@/src/services/android-biometric-login': {},
+    '@/src/services/notifications': {
+      unsubscribeCurrentWebPush: async () => undefined,
+    },
     '@/src/services/api': {
       ApiError: class ApiError extends Error {},
       setAccessTokenRenewer: (callback) => {

@@ -14,10 +14,7 @@ import {
   type CurrentUser,
   type TokenPair,
 } from '@/src/services/api';
-import {
-  registerForPersonalNotifications,
-  unsubscribeCurrentWebPush,
-} from '@/src/services/notifications';
+import { unsubscribeCurrentWebPush } from '@/src/services/notifications';
 
 type SessionState = {
   initialized: boolean;
@@ -51,24 +48,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await saveRefreshToken(tokens.refresh_token);
     const user = await authApi.me(tokens.access_token);
     set({ accessToken: tokens.access_token, user, initialized: true, sessionExpired: false });
-    if (
-      freshLogin &&
-      typeof Notification !== 'undefined' &&
-      Notification.permission === 'granted'
-    ) {
-      void authApi
-        .listConsents(tokens.access_token)
-        .then((consents) => {
-          if (
-            consents.some(
-              (consent) => consent.policy_key === 'notifications.push' && !consent.revoked_at,
-            )
-          ) {
-            return registerForPersonalNotifications(tokens.access_token);
-          }
-        })
-        .catch(() => undefined);
-    }
   },
 
   restore: async () => {

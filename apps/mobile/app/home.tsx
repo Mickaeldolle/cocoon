@@ -2,9 +2,22 @@ import { AuditedPressable as Pressable } from '@/src/components/audited-pressabl
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Redirect, router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { neuralApi, secretApi } from '@/src/services/api';
+import { authApi, neuralApi, secretApi } from '@/src/services/api';
+import {
+  homePushAction,
+  personalNotificationPermission,
+  registerForPersonalNotifications,
+} from '@/src/services/notifications';
 import {
   clearPendingCapture,
   loadPendingCapture,
@@ -47,6 +60,70 @@ export default function HomeScreen() {
     }, [refreshUser]),
   );
   const [notice, setNotice] = useState<string | null>(null);
+  const [pushAction, setPushAction] = useState<'offer' | 'blocked' | 'retry' | null>(null);
+  const [pushError, setPushError] = useState<string | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  const checkPush = useCallback(
+    async (isCancelled: () => boolean = () => false) => {
+      if (!token || !user?.id) return;
+      try {
+        const consents = await authApi.listConsents(token);
+        if (isCancelled()) return;
+        const permission = await personalNotificationPermission();
+        if (isCancelled()) return;
+        const action = homePushAction(consents, permission, Platform.OS);
+        if (action === 'skip') {
+          setPushAction(null);
+        } else if (action === 'blocked') {
+          setPushAction('blocked');
+        } else if (action === 'offer') {
+          setPushAction('offer');
+        } else {
+          await registerForPersonalNotifications(token);
+          if (!isCancelled()) {
+            setPushAction(null);
+            setPushError(null);
+          }
+        }
+      } catch (error) {
+        if (isCancelled()) return;
+        const permission = await personalNotificationPermission().catch(() => 'unsupported');
+        if (isCancelled()) return;
+        setPushAction(permission === 'denied' ? 'blocked' : 'retry');
+        setPushError(
+          error instanceof Error ? error.message : 'Inscription aux notifications impossible.',
+        );
+      }
+    },
+    [token, user?.id],
+  );
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void checkPush(() => cancelled);
+      return () => {
+        cancelled = true;
+      };
+    }, [checkPush]),
+  );
+  const enablePush = () => {
+    if (!token || pushBusy) return;
+    setPushBusy(true);
+    setPushError(null);
+    void registerForPersonalNotifications(token)
+      .then(() => {
+        setPushAction(null);
+        setPushError(null);
+      })
+      .catch(async (error) => {
+        const permission = await personalNotificationPermission().catch(() => 'unsupported');
+        setPushAction(permission === 'denied' ? 'blocked' : 'offer');
+        setPushError(
+          error instanceof Error ? error.message : 'Inscription aux notifications impossible.',
+        );
+      })
+      .finally(() => setPushBusy(false));
+  };
   const input = useRef<TextInput>(null);
   const recoveryKey = useRef<string | null>(null);
   const requestController = useRef<AbortController | null>(null);
@@ -247,6 +324,40 @@ export default function HomeScreen() {
           <Text style={styles.intro}>
             Déposez ce qui compte. Cocoon garde le contexte et vous aide au bon moment.
           </Text>
+          {pushAction ? (
+            <View style={styles.pushCard}>
+              <Text style={styles.pushTitle}>Notifications</Text>
+              <Text style={styles.pushText}>
+                {pushAction === 'blocked'
+                  ? `Autorisez les notifications dans les réglages du ${Platform.OS === 'web' ? 'navigateur' : 'téléphone'}.`
+                  : pushAction === 'retry'
+                    ? 'Impossible de vérifier votre inscription aux notifications.'
+                    : 'Recevez vos rappels et nouveaux messages sur cet appareil.'}
+              </Text>
+              {pushError ? (
+                <Text accessibilityRole="alert" style={styles.pushError}>
+                  {pushError}
+                </Text>
+              ) : null}
+              {pushAction !== 'blocked' ? (
+                <Pressable
+                  auditAction="home.notifications.enable"
+                  accessibilityRole="button"
+                  disabled={pushBusy}
+                  onPress={pushAction === 'retry' ? () => void checkPush() : enablePush}
+                  style={[styles.pushButton, pushBusy && styles.disabled]}
+                >
+                  <Text style={styles.pushButtonText}>
+                    {pushBusy
+                      ? 'Activation…'
+                      : pushAction === 'retry'
+                        ? 'Réessayer'
+                        : 'Activer les notifications'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
           <View style={styles.capture}>
             <TextInput
               ref={input}
@@ -453,6 +564,28 @@ function makeStyles(colors: ColorTokens) {
       fontSize: 20,
     },
     conversationLinkText: { color: colors.spruce, fontSize: 14, fontWeight: '700' },
+    pushCard: {
+      backgroundColor: colors.white,
+      borderColor: colors.border,
+      borderRadius: 14,
+      borderWidth: 1,
+      marginTop: 16,
+      padding: 14,
+    },
+    pushTitle: { color: colors.ink, fontSize: 14, fontWeight: '800' },
+    pushText: { color: colors.muted, fontSize: 13, lineHeight: 18, marginTop: 4 },
+    pushError: { color: colors.berry, fontSize: 12, lineHeight: 17, marginTop: 6 },
+    pushButton: {
+      alignItems: 'center',
+      alignSelf: 'flex-start',
+      backgroundColor: colors.spruce,
+      borderRadius: 10,
+      justifyContent: 'center',
+      marginTop: 10,
+      minHeight: 40,
+      paddingHorizontal: 14,
+    },
+    pushButtonText: { color: colors.white, fontSize: 13, fontWeight: '800' },
     disabled: { opacity: 0.55 },
     cancel: { alignSelf: 'flex-start', marginTop: 8, paddingHorizontal: 4, paddingVertical: 5 },
     cancelText: { color: colors.clay, fontWeight: '700' },

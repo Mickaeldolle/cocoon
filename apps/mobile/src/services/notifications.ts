@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-import { authApi } from '@/src/services/api';
+import { authApi, type Consent } from '@/src/services/api';
 
 export type PersonalNotificationRoute = '/dashboard/tasks' | '/notifications' | '/home';
 
@@ -16,6 +16,8 @@ export function routeForPersonalNotification(
 }
 
 type NotificationsModule = typeof import('expo-notifications');
+export type PersonalNotificationPermission = 'granted' | 'prompt' | 'denied' | 'unsupported';
+export type HomePushAction = 'register' | 'offer' | 'blocked' | 'skip';
 let notificationsModule: NotificationsModule | null = null;
 let handlerConfigured = false;
 
@@ -54,6 +56,40 @@ export async function subscribeToPersonalNotificationResponses(
   return () => subscription.remove();
 }
 
+export async function personalNotificationPermission(): Promise<PersonalNotificationPermission> {
+  if (Platform.OS === 'web') {
+    if (
+      typeof window === 'undefined' ||
+      !window.isSecureContext ||
+      !('serviceWorker' in navigator) ||
+      !('PushManager' in window) ||
+      !('Notification' in window)
+    ) {
+      return 'unsupported';
+    }
+    return Notification.permission === 'default' ? 'prompt' : Notification.permission;
+  }
+  const notifications = await loadNotifications();
+  if (!notifications) return 'unsupported';
+  const permission = await notifications.getPermissionsAsync();
+  if (permission.status === 'granted') return 'granted';
+  return permission.status === 'undetermined' && permission.canAskAgain ? 'prompt' : 'denied';
+}
+
+export function homePushAction(
+  consents: Pick<Consent, 'policy_key' | 'revoked_at'>[],
+  permission: PersonalNotificationPermission,
+  platform: string,
+): HomePushAction {
+  if (consents.some((item) => item.policy_key === 'notifications.push' && item.revoked_at)) {
+    return 'skip';
+  }
+  if (permission === 'unsupported') return 'skip';
+  if (permission === 'denied') return 'blocked';
+  if (permission === 'prompt' && platform === 'web') return 'offer';
+  return 'register';
+}
+
 export async function registerForPersonalNotifications(accessToken: string): Promise<void> {
   if (Platform.OS === 'web') {
     if (
@@ -65,7 +101,8 @@ export async function registerForPersonalNotifications(accessToken: string): Pro
     ) {
       throw new Error('Les notifications web nécessitent HTTPS et un navigateur compatible.');
     }
-    const permission = await Notification.requestPermission();
+    const permission =
+      Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
     if (permission !== 'granted') {
       throw new Error('Autorisez les notifications dans les réglages du navigateur.');
     }
