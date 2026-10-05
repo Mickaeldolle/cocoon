@@ -860,10 +860,12 @@ def send_secret_message(
         return message_response(existing, [membership])
     session.refresh(message)
     secret_typing.update(conversation_id, user_id, False)
+    response = message_response(message, [membership])
+    session.close()
     for alert_id in alert_ids:
         try:
             send_pending_notifications(datetime.now(UTC), max_items=1, item_id=alert_id)
         except Exception:
             # The message is already committed; push failure must not make the client resend it.
             notification_logger.exception("secret_push_dispatch_failed")
-    return message_response(message, [membership])
+    return response

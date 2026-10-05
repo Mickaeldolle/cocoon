@@ -916,12 +916,17 @@ def create_test_notification(
     )
     session.add(item)
     session.commit()
+    session.refresh(item)
+    item_id = item.id
+    session.close()
     try:
-        send_pending_notifications(datetime.now(UTC), max_items=1, item_id=item.id)
+        send_pending_notifications(datetime.now(UTC), max_items=1, item_id=item_id)
     except Exception:
         notification_logger.exception("notification_test_dispatch_failed")
-    session.refresh(item)
-    return notification_response(item)
+    updated = session.get(NotificationOutbox, item_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Notification introuvable.")
+    return notification_response(updated)
 
 
 @router.post("/notifications/{notification_id}/read", response_model=NotificationResponse)
