@@ -136,6 +136,11 @@ export type AssistantMessage = {
 };
 
 export type AssistantHistory = { messages: AssistantMessage[] };
+export type AssistantFreeModels = {
+  available: boolean;
+  default_model: string | null;
+  models: { id: string; name: string }[];
+};
 export type AssistantTurn = { message: AssistantMessage; mode: 'rules' | 'llm' };
 export type AssistantChat = {
   message: AssistantMessage;
@@ -704,6 +709,8 @@ export const secretApi = {
 };
 
 export const assistantApi = {
+  freeModels: (accessToken: string) =>
+    call<AssistantFreeModels>('/api/assistant/models', withAccessToken(accessToken)),
   chat: (accessToken: string, text: string, idempotencyKey?: string) =>
     call<AssistantChat>(
       '/api/assistant/chat',
@@ -721,6 +728,7 @@ export const assistantApi = {
     signal?: AbortSignal,
     idempotencyKey?: string,
     retry = false,
+    model?: string,
   ): Promise<AssistantChat> => {
     const response = await expoFetch(`${apiUrl}/api/assistant/chat/stream`, {
       method: 'POST',
@@ -730,7 +738,7 @@ export const assistantApi = {
         Authorization: `Bearer ${accessToken}`,
         ...(idempotencyKey ? { 'X-Assistant-Idempotency-Key': idempotencyKey } : {}),
       },
-      body: JSON.stringify({ text, retry }),
+      body: JSON.stringify({ text, retry, ...(model ? { model } : {}) }),
     });
     if (!response.ok || !response.body) {
       const body: unknown = await response.json().catch(() => null);

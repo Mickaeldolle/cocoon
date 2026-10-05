@@ -174,10 +174,11 @@ def llm_chat(messages: list[dict[str, str]]) -> str | None:
 
 
 def llm_stream(
-    messages: list[dict[str, str]], *, cancel_event: threading.Event | None = None
+    messages: list[dict[str, str]], *, cancel_event: threading.Event | None = None,
+    model: str | None = None,
 ):
     """Yield provider deltas while keeping the provider behind the API boundary."""
-    return LLMService().stream_chat(messages, cancel_event=cancel_event)
+    return LLMService(model=model).stream_chat(messages, cancel_event=cancel_event)
 
 
 def optional_llm_chat(messages: list[dict[str, str]]) -> str | None:

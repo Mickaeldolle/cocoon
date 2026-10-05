@@ -29,6 +29,12 @@ from app.modules.assistant.executor import (
     execute_assistant_proposal,
     recurring_schedule,
 )
+from app.modules.assistant.free_models import (
+    FreeModelCatalogError,
+    free_models,
+    select_free_model,
+    uses_openrouter,
+)
 from app.modules.assistant.kernel import (
     answer,
     parse_streamed_answer,
@@ -61,6 +67,7 @@ from app.modules.assistant.schemas import (
     AssistantHistoryResponse,
     AssistantMessageResponse,
     AssistantProposalResponse,
+    AssistantStreamRequest,
     AssistantTurnRequest,
     AssistantTurnResponse,
     CalendarEventListResponse,
@@ -137,6 +144,30 @@ async def assistant_status(
 ) -> dict[str, str | bool]:
     """Private model availability; no URL or credentials in the response."""
     return await run_in_threadpool(LLMService().status)
+
+
+@router.get("/models")
+async def assistant_free_models(
+    _current_user: User = Depends(require_assistant_enabled),
+) -> dict[str, object]:
+    settings = get_settings()
+    if not uses_openrouter(settings):
+        return {"available": False, "default_model": None, "models": []}
+    try:
+        models = await run_in_threadpool(free_models, settings)
+    except FreeModelCatalogError as error:
+        raise HTTPException(
+            503, "Impossible de charger les modèles gratuits. Réessayez."
+        ) from error
+    ids = {item.id for item in models}
+    default_model = settings.llm_model if settings.llm_model in ids else "openrouter/free"
+    if default_model not in ids:
+        default_model = models[0].id
+    return {
+        "available": True,
+        "default_model": default_model,
+        "models": [{"id": item.id, "name": item.name} for item in models],
+    }
 
 
 @router.post("/voice/transcriptions", response_model=VoiceTranscriptionResponse)
@@ -433,7 +464,7 @@ async def create_chat_turn(
     dependencies=[Depends(enforce_generation_rate_limit)],
 )
 async def create_streaming_chat_turn(
-    payload: AssistantTurnRequest,
+    payload: AssistantStreamRequest,
     request: Request,
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
@@ -441,6 +472,20 @@ async def create_streaming_chat_turn(
 ) -> StreamingResponse:
     """Stream the assistant reply while committing the durable turn at completion."""
     note_request_details(request, message_length=len(payload.text))
+    selected_model: str | None = None
+    if payload.model is not None:
+        if not uses_openrouter(get_settings()):
+            raise HTTPException(422, "La sélection de modèles est réservée à OpenRouter.")
+        try:
+            selected_model = await run_in_threadpool(
+                select_free_model, get_settings(), payload.model
+            )
+        except FreeModelCatalogError as error:
+            raise HTTPException(
+                503, "Impossible de vérifier ce modèle gratuit. Réessayez."
+            ) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
     thread = get_or_create_thread(session, current_user.id)
     claimed_key: str | None = None
     previous_user_message: AssistantMessage | None = None
@@ -550,6 +595,7 @@ async def create_streaming_chat_turn(
                     recalled_memories,
                     personal_context,
                     cancel_event=cancel_event,
+                    model=selected_model,
                 )
             )
 

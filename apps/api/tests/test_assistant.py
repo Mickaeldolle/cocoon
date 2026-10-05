@@ -11,8 +11,10 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.main import app
+from app.modules.assistant import router as assistant_router
 from app.modules.assistant import service as assistant_service
 from app.modules.assistant import voice as assistant_voice
+from app.modules.assistant.free_models import FreeModel
 from app.modules.assistant.models import (
     AssistantProposal,
     AssistantProposalStatus,
@@ -343,6 +345,63 @@ def test_streaming_chat_emits_deltas_and_persists_the_completed_turn(
     assert '"content": "Bonjour"' in response.text
     history = client.get("/api/assistant/history", headers=auth)
     assert [message["content"] for message in history.json()["messages"]] == ["Bonjour", "Bonjour"]
+
+
+def test_streaming_chat_uses_only_a_validated_free_model(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    used_models: list[str | None] = []
+    monkeypatch.setattr(assistant_router, "uses_openrouter", lambda _settings: True)
+
+    def select(_settings, requested: str) -> str:
+        if requested != "vendor/chat:free":
+            raise ValueError("Ce modèle gratuit n'est plus disponible.")
+        return requested
+
+    monkeypatch.setattr(assistant_router, "select_free_model", select)
+    monkeypatch.setattr(
+        assistant_service,
+        "llm_stream",
+        lambda _messages, **kwargs: (
+            used_models.append(kwargs.get("model")) or iter(["Bonjour !"])
+        ),
+    )
+    auth = authenticated_headers(client)
+    rejected = client.post(
+        "/api/assistant/chat/stream",
+        headers=auth,
+        json={"text": "Bonjour", "model": "vendor/paid"},
+    )
+    assert rejected.status_code == 422
+    assert used_models == []
+    accepted = client.post(
+        "/api/assistant/chat/stream",
+        headers=auth,
+        json={"text": "Bonjour", "model": "vendor/chat:free"},
+    )
+    assert accepted.status_code == 200
+    assert 'event: complete' in accepted.text
+    assert used_models == ["vendor/chat:free"]
+
+
+def test_free_model_list_is_private_and_contains_no_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(assistant_router, "uses_openrouter", lambda _settings: True)
+    monkeypatch.setattr(
+        assistant_router,
+        "free_models",
+        lambda _settings: (FreeModel("openrouter/free", "Free Models Router"),),
+    )
+    assert client.get("/api/assistant/models").status_code == 401
+    response = client.get("/api/assistant/models", headers=authenticated_headers(client))
+    assert response.status_code == 200
+    assert response.json() == {
+        "available": True,
+        "default_model": "openrouter/free",
+        "models": [{"id": "openrouter/free", "name": "Free Models Router"}],
+    }
+    assert "test-key" not in response.text
 
 
 def test_streaming_chat_accepts_plain_text_from_model(

@@ -81,6 +81,10 @@ class AssistantTurnRequest(BaseModel):
         return normalized
 
 
+class AssistantStreamRequest(AssistantTurnRequest):
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+
+
 class VoiceTranscriptionResponse(BaseModel):
     """The editable text recovered from a short, explicitly recorded audio capture."""
 

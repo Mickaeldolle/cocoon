@@ -93,11 +93,13 @@ def stream_answer(
     recalled_memories: list[str],
     personal_context: list[dict[str, object]] | None = None,
     cancel_event: threading.Event | None = None,
+    model: str | None = None,
 ) -> Iterator[str]:
     """Yield JSON model deltas; the final payload is validated by the API."""
     yield from assistant_service.llm_stream(
         _conversation_messages(message, recent_conversation, recalled_memories, personal_context),
         cancel_event=cancel_event,
+        model=model,
     )
 
 

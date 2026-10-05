@@ -24,8 +24,10 @@ class ProviderFactory:
 
 
 class LLMService:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, *, model: str | None = None) -> None:
         self.settings = settings or get_settings()
+        if model is not None:
+            self.settings = self.settings.model_copy(update={"llm_model": model})
         self.provider = ProviderFactory.create(self.settings)
 
     @property

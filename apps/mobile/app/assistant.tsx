@@ -59,9 +59,10 @@ type LocalTurn = {
   delivery: 'pending' | 'failed' | 'sent';
   error?: string;
   reply?: AssistantMessage;
+  model?: string;
 };
 
-type SendPayload = { message: string; key: string; retry: boolean };
+type SendPayload = { message: string; key: string; retry: boolean; model?: string };
 
 export default function AssistantScreen() {
   const token = useSessionStore((state) => state.accessToken);
@@ -83,6 +84,8 @@ export default function AssistantScreen() {
     typeof params.initial === 'string' ? params.initial : '',
   );
   const [streamingText, setStreamingText] = useState('');
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [localTurns, setLocalTurns] = useState<LocalTurn[]>([]);
   const [choices, setChoices] = useState<string[]>([]);
   const [memoryProposals, setMemoryProposals] = useState<AssistantProposal[]>([]);
@@ -99,8 +102,20 @@ export default function AssistantScreen() {
     queryFn: () => assistantApi.history(token!),
     retry: false,
   });
+  const freeModels = useQuery({
+    queryKey: ['assistant', 'free-models', userId],
+    enabled: Boolean(token && assistantEnabled),
+    queryFn: () => assistantApi.freeModels(token!),
+    staleTime: 300_000,
+    retry: false,
+  });
+  const chosenModel = freeModels.data?.available
+    ? (freeModels.data.models.find((item) => item.id === selectedModel) ??
+      freeModels.data.models.find((item) => item.id === freeModels.data.default_model))
+    : undefined;
+  const modelsReady = freeModels.data?.available === false || Boolean(chosenModel);
   const send = useMutation({
-    mutationFn: ({ message, key, retry }: SendPayload) =>
+    mutationFn: ({ message, key, retry, model }: SendPayload) =>
       (() => {
         streamAbort.current = new AbortController();
         return assistantApi.streamChat(
@@ -110,6 +125,7 @@ export default function AssistantScreen() {
           streamAbort.current.signal,
           key,
           retry,
+          model,
         );
       })(),
     onSuccess: (result, { key }) => {
@@ -198,19 +214,26 @@ export default function AssistantScreen() {
   ]);
   const submit = useCallback(
     (message?: string, retryKey?: string) => {
-      if (!token || !assistantEnabled || send.isPending) return;
+      if (!token || !assistantEnabled || send.isPending || !modelsReady) return;
       const value = (message ?? text).trim();
       if (!value) {
         setNotice('Écrivez un message avant de l’envoyer.');
         return;
       }
       const key = retryKey ?? `mobile-chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const previousModel = retryKey
+        ? localTurns.find((turn) => turn.key === retryKey)?.model
+        : undefined;
+      const model =
+        previousModel && freeModels.data?.models.some((item) => item.id === previousModel)
+          ? previousModel
+          : chosenModel?.id;
       setLocalTurns((current) =>
         retryKey
           ? current.map((turn) =>
               turn.key === key ? { ...turn, delivery: 'pending', error: undefined } : turn,
             )
-          : [...current, { key, text: value, delivery: 'pending' }],
+          : [...current, { key, text: value, delivery: 'pending', model }],
       );
       if (!retryKey) {
         setText('');
@@ -218,10 +241,14 @@ export default function AssistantScreen() {
       }
       setStreamingText('');
       setNotice(null);
-      send.mutate({ message: value, key, retry: Boolean(retryKey) });
+      send.mutate({ message: value, key, retry: Boolean(retryKey), model });
     },
     [
       assistantEnabled,
+      chosenModel?.id,
+      freeModels.data?.models,
+      localTurns,
+      modelsReady,
       send,
       setChoices,
       setLocalTurns,
@@ -236,6 +263,7 @@ export default function AssistantScreen() {
     if (
       !token ||
       !assistantEnabled ||
+      !modelsReady ||
       initialSubmitted.current ||
       typeof params.initial !== 'string' ||
       !params.initial.trim()
@@ -244,7 +272,7 @@ export default function AssistantScreen() {
     }
     initialSubmitted.current = true;
     requestAnimationFrame(() => submit(params.initial));
-  }, [assistantEnabled, params.initial, submit, token]);
+  }, [assistantEnabled, modelsReady, params.initial, submit, token]);
   const choose = (choice: string) => {
     submit(choice);
   };
@@ -267,7 +295,7 @@ export default function AssistantScreen() {
             auditAction="assistant.message.retry"
             accessibilityRole="button"
             accessibilityLabel={`Réessayer l’envoi de : ${content}`}
-            disabled={send.isPending || !assistantEnabled}
+            disabled={send.isPending || !assistantEnabled || !modelsReady}
             onPress={() => submit(local.text, local.key)}
             style={[styles.retry, send.isPending && styles.retryDisabled]}
           >
@@ -312,6 +340,66 @@ export default function AssistantScreen() {
             Votre assistant
           </Text>
         </View>
+        {freeModels.data?.available ? (
+          <View style={styles.modelBar}>
+            <Text style={styles.modelLabel}>Modèle gratuit</Text>
+            <Pressable
+              auditAction="assistant.model.open"
+              accessibilityLabel={`Modèle gratuit : ${chosenModel?.name ?? 'Choisir'}`}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: modelMenuOpen, disabled: send.isPending }}
+              disabled={send.isPending}
+              onPress={() => {
+                Keyboard.dismiss();
+                setModelMenuOpen((open) => !open);
+              }}
+              style={styles.modelButton}
+            >
+              <Text numberOfLines={1} style={styles.modelButtonText}>
+                {chosenModel?.name ?? 'Choisir'}
+              </Text>
+              <Text style={styles.modelArrow}>{modelMenuOpen ? 'expand_less' : 'expand_more'}</Text>
+            </Pressable>
+            {modelMenuOpen ? (
+              <ScrollView nestedScrollEnabled style={styles.modelMenu}>
+                {freeModels.data.models.map((item) => (
+                  <Pressable
+                    auditAction="assistant.model.select"
+                    key={item.id}
+                    accessibilityLabel={`Utiliser ${item.name}`}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: item.id === chosenModel?.id }}
+                    onPress={() => {
+                      setSelectedModel(item.id);
+                      setModelMenuOpen(false);
+                    }}
+                    style={[
+                      styles.modelOption,
+                      item.id === chosenModel?.id && styles.modelOptionActive,
+                    ]}
+                  >
+                    <Text numberOfLines={2} style={styles.modelOptionText}>
+                      {item.name}
+                    </Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : null}
+          </View>
+        ) : null}
+        {assistantEnabled && freeModels.isError ? (
+          <Pressable
+            auditAction="assistant.model.retry"
+            accessibilityLabel="Réessayer le chargement des modèles gratuits"
+            accessibilityRole="button"
+            onPress={() => void freeModels.refetch()}
+            style={styles.modelError}
+          >
+            <Text accessibilityRole="alert" style={styles.modelErrorText}>
+              Modèles indisponibles. Réessayer
+            </Text>
+          </Pressable>
+        ) : null}
         <ScrollView
           ref={scroll}
           contentContainerStyle={styles.content}
@@ -409,7 +497,7 @@ export default function AssistantScreen() {
                   key={choice}
                   accessibilityRole="button"
                   accessibilityLabel={`Envoyer la réponse : ${choice}`}
-                  disabled={send.isPending || !assistantEnabled}
+                  disabled={send.isPending || !assistantEnabled || !modelsReady}
                   onPress={() => choose(choice)}
                   style={styles.choice}
                 >
@@ -430,12 +518,17 @@ export default function AssistantScreen() {
               {notice}
             </Text>
           ) : null}
+          {assistantEnabled && freeModels.isPending ? (
+            <Text accessibilityLiveRegion="polite" style={styles.modelLoading}>
+              Chargement des modèles…
+            </Text>
+          ) : null}
           <View style={styles.composerRow}>
             <TextInput
               ref={input}
               accessibilityLabel="Votre message"
               autoFocus={assistantEnabled && Boolean(params.initial?.trim())}
-              editable={assistantEnabled}
+              editable={assistantEnabled && modelsReady}
               blurOnSubmit={false}
               multiline={false}
               onChangeText={(value) => {
@@ -457,7 +550,7 @@ export default function AssistantScreen() {
               accessToken={token}
               colors={colors}
               variant="chat"
-              disabled={!assistantEnabled}
+              disabled={!assistantEnabled || !modelsReady}
               sending={send.isPending}
               hasText={!!text.trim()}
               onSend={() => submit()}
@@ -504,6 +597,61 @@ function makeStyles(colors: ColorTokens, mode: 'light' | 'dark') {
       fontSize: 17,
       fontWeight: '700',
     },
+    modelBar: {
+      alignItems: 'center',
+      backgroundColor: colors.white,
+      borderBottomColor: colors.border,
+      borderBottomWidth: 1,
+      flexDirection: 'row',
+      gap: 10,
+      minHeight: 54,
+      paddingHorizontal: darkTheme.spacing.content,
+      zIndex: 5,
+    },
+    modelLabel: { color: colors.muted, fontSize: 12, fontWeight: '700' },
+    modelButton: {
+      alignItems: 'center',
+      borderColor: colors.border,
+      borderRadius: 10,
+      borderWidth: 1,
+      flex: 1,
+      flexDirection: 'row',
+      gap: 6,
+      justifyContent: 'space-between',
+      minHeight: 38,
+      paddingHorizontal: 10,
+    },
+    modelButtonText: { color: colors.ink, flex: 1, fontSize: 13, fontWeight: '700' },
+    modelArrow: { color: colors.spruce, fontFamily: 'MaterialSymbols_400Regular', fontSize: 20 },
+    modelMenu: {
+      backgroundColor: colors.white,
+      borderColor: colors.border,
+      borderRadius: 12,
+      borderWidth: 1,
+      elevation: 8,
+      left: darkTheme.spacing.content,
+      maxHeight: 240,
+      position: 'absolute',
+      right: darkTheme.spacing.content,
+      shadowColor: '#000000',
+      shadowOffset: { height: 3, width: 0 },
+      shadowOpacity: 0.16,
+      shadowRadius: 8,
+      top: 50,
+    },
+    modelOption: {
+      borderBottomColor: colors.border,
+      borderBottomWidth: 1,
+      justifyContent: 'center',
+      minHeight: 44,
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+    },
+    modelOptionActive: { backgroundColor: colors.spruceSoft },
+    modelOptionText: { color: colors.ink, fontSize: 13, lineHeight: 18 },
+    modelError: { backgroundColor: colors.berrySoft, paddingHorizontal: 16, paddingVertical: 9 },
+    modelErrorText: { color: colors.berry, fontSize: 13, fontWeight: '700' },
+    modelLoading: { color: colors.muted, fontSize: 12, marginBottom: 6 },
     messages: { gap: 9, paddingTop: 4 },
     loader: { marginVertical: 28 },
     historyError: {

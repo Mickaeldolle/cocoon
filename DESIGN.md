@@ -56,4 +56,9 @@ La conversation doit évoquer un carnet de messages personnel : le contenu reste
 
 ## Règles d'usage
 
+Dans l'assistant, le choix d'un modèle gratuit OpenRouter est un contrôle secondaire
+compact sous l'en-tête. La liste se charge depuis l'API et affiche un état de
+chargement ou une action de reprise en cas d'erreur. Le message et son envoi
+restent le centre de l'écran ; le modèle choisi s'applique aux nouveaux messages.
+
 Les libellés sont en français et décrivent une action ou un état réel. Les icônes seules portent un nom accessible. Le thème sombre conserve un contraste suffisant sur les bulles indigo. Les discussions cachées utilisent le même affichage, mais leur accès reste conditionné à la session secrète. Leur indicateur de saisie ne passe jamais par le canal temps réel des conversations visibles ; l'accusé de lecture n'est visible qu'aux membres acceptés après déverrouillage.

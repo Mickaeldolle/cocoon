@@ -77,6 +77,30 @@ la connexion depuis le pont Docker sans ouvrir le port sur Internet.
 Voir la [documentation du serveur LM Studio](https://lmstudio.ai/docs/developer/core/server)
 et ses [routes OpenAI compatibles](https://lmstudio.ai/docs/developer/openai-compat/models).
 
+### OpenRouter et sélection des modèles gratuits
+
+Configurer **l'API** (en local dans `apps/api/.env`, sur Vercel dans les variables du projet API) :
+
+```env
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://openrouter.ai/api/v1
+LLM_API_KEY=cle-secrete-openrouter
+LLM_MODEL=openrouter/free
+```
+
+`LLM_API_URL` reste accepté à la place de `LLM_BASE_URL`, mais l'URL doit être la
+racine `/api/v1`, sans `/chat/completions`. Redémarrer l'API après avoir modifié
+le fichier `.env`. La clé ne va jamais dans `EXPO_PUBLIC_*` ni dans le frontend.
+
+Dans l'écran assistant, `GET /api/assistant/models` lit le catalogue OpenRouter
+et affiche les modèles texte marqués `:free`, ainsi que `openrouter/free`, quand
+leur tarification annoncée est nulle. Le choix ne s'applique qu'aux nouveaux
+messages de cet écran et n'est pas conservé après sa fermeture. L'API revérifie
+le modèle demandé avant la génération et refuse un identifiant payant ou retiré.
+Le catalogue est conservé cinq minutes en mémoire ; si OpenRouter ne répond pas,
+la sélection est momentanément indisponible. Les limites de débit des modèles
+gratuits restent celles d'OpenRouter.
+
 ### vLLM distant ou temporaire
 
 Sur un hôte pris en charge, installer vLLM selon les
