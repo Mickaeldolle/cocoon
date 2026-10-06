@@ -38,6 +38,8 @@ export type CurrentUser = {
   display_name: string;
   is_superadmin: boolean;
   enable_assistant: boolean;
+  assistant_name: string | null;
+  welcome_completed_at: string | null;
   created_at: string;
 };
 
@@ -443,6 +445,19 @@ export const authApi = {
     }),
   me: (accessToken: string) =>
     call<CurrentUser>('/api/auth/me', { headers: { Authorization: `Bearer ${accessToken}` } }),
+  setAssistantName: (accessToken: string, name: string | null) =>
+    call<CurrentUser>(
+      '/api/auth/assistant-name',
+      withAccessToken(accessToken, {
+        method: 'PUT',
+        body: JSON.stringify({ assistant_name: name }),
+      }),
+    ),
+  completeWelcome: (accessToken: string) =>
+    call<CurrentUser>(
+      '/api/auth/welcome/complete',
+      withAccessToken(accessToken, { method: 'POST' }),
+    ),
   logout: (accessToken: string) =>
     call<void>('/api/auth/logout', {
       method: 'POST',

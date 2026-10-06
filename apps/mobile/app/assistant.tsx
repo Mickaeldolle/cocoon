@@ -69,6 +69,7 @@ type SendPayload = { message: string; key: string; retry: boolean; model?: strin
 export default function AssistantScreen() {
   const token = useSessionStore((state) => state.accessToken);
   const userId = useSessionStore((state) => state.user?.id);
+  const assistantName = useSessionStore((state) => state.user?.assistant_name ?? 'Cocoon');
   const assistantEnabled = useSessionStore((state) => state.user?.enable_assistant === true);
   const refreshUser = useSessionStore((state) => state.refreshUser);
   const mode = useThemeStore((state) => state.mode);
@@ -363,7 +364,7 @@ export default function AssistantScreen() {
           </Pressable>
           <AssistantOrb size={52} active={send.isPending} enabled={assistantEnabled} />
           <Text numberOfLines={1} style={styles.title}>
-            Votre assistant
+            {assistantName}
           </Text>
         </View>
         {freeModels.data?.available ? (

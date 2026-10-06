@@ -281,6 +281,8 @@ export default function HomeScreen() {
     }
   };
   if (initialized && (!token || !user)) return <Redirect href="/sign-in" />;
+  if (initialized && user && !user.welcome_completed_at)
+    return <Redirect href={'/welcome' as never} />;
   return (
     <SafeAreaView edges={['top']} style={styles.screen}>
       <KeyboardAvoidingView
@@ -292,7 +294,7 @@ export default function HomeScreen() {
         <View style={styles.gestureArea} {...secretGestureHandlers}>
           <View style={styles.top}>
             <View style={styles.heading}>
-              <Text style={styles.kicker}>COCOON</Text>
+              <Text style={styles.kicker}>{user?.assistant_name ?? 'COCOON'}</Text>
             </View>
             <View style={styles.topActions}>
               <Pressable
@@ -357,7 +359,7 @@ export default function HomeScreen() {
             ) : null}
             <View style={styles.presence}>
               <AssistantOrb size={orbSize} active={opening} enabled={assistantEnabled} />
-              <Text style={styles.presenceTitle}>Votre assistant personnel</Text>
+              <Text style={styles.presenceTitle}>{user?.assistant_name ?? 'Cocoon'}</Text>
               <Text accessibilityLiveRegion="polite" style={styles.presenceStatus}>
                 {opening
                   ? 'Votre assistant prépare sa réponse…'

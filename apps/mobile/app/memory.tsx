@@ -22,6 +22,7 @@ import { darkTheme, lightTheme, type ColorTokens } from '@/src/theme';
 export default function MemoryScreen() {
   const token = useSessionStore((state) => state.accessToken);
   const userId = useSessionStore((state) => state.user?.id);
+  const assistantName = useSessionStore((state) => state.user?.assistant_name ?? 'Cocoon');
   const mode = useThemeStore((state) => state.mode);
   const colors = (mode === 'light' ? lightTheme : darkTheme).colors;
   const styles = makeStyles(colors);
@@ -98,7 +99,7 @@ export default function MemoryScreen() {
           <Text style={styles.backText}>‹ Profil</Text>
         </Pressable>
         <Text style={styles.kicker}>MÉMOIRE PERSONNELLE</Text>
-        <Text style={styles.title}>Ce que Cocoon retient</Text>
+        <Text style={styles.title}>Ce que {assistantName} retient</Text>
         <Text style={styles.intro}>
           Ces informations sont propres à votre compte. Vous pouvez les corriger ou les oublier à
           tout moment.

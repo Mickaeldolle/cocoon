@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 class DeviceInput(BaseModel):
@@ -81,7 +81,23 @@ class UserResponse(BaseModel):
     display_name: str
     is_superadmin: bool
     enable_assistant: bool
+    assistant_name: str | None
+    welcome_completed_at: datetime | None
     created_at: datetime
+
+
+class AssistantNameUpdate(BaseModel):
+    assistant_name: str | None = Field(default=None, max_length=40)
+
+    @field_validator("assistant_name")
+    @classmethod
+    def normalize_assistant_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized or any(ord(character) < 32 for character in normalized):
+            raise ValueError("Le nom de l’assistant ne peut pas être vide.")
+        return normalized
 
 
 class TokenPair(BaseModel):

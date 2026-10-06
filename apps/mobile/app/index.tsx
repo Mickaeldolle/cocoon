@@ -24,5 +24,9 @@ export default function Index() {
       </View>
     );
   }
-  return <Redirect href={user ? '/home' : '/sign-in'} />;
+  return (
+    <Redirect
+      href={user ? (user.welcome_completed_at ? '/home' : ('/welcome' as never)) : '/sign-in'}
+    />
+  );
 }

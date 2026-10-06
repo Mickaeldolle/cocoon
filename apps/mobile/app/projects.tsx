@@ -19,6 +19,7 @@ const statusLabels: Record<PersonalProject['status'], string> = {
 export default function ProjectsScreen() {
   const token = useSessionStore((state) => state.accessToken);
   const userId = useSessionStore((state) => state.user?.id);
+  const assistantName = useSessionStore((state) => state.user?.assistant_name ?? 'Cocoon');
   const mode = useThemeStore((state) => state.mode);
   const colors = (mode === 'light' ? lightTheme : darkTheme).colors;
   const styles = makeStyles(colors);
@@ -71,8 +72,8 @@ export default function ProjectsScreen() {
         <Text style={styles.kicker}>MON ESPACE</Text>
         <Text style={styles.title}>Mes projets</Text>
         <Text style={styles.intro}>
-          Les projets restent personnels. Cocoon peut s’en servir pour mieux comprendre le contexte
-          de vos demandes.
+          Les projets restent personnels. {assistantName} peut s’en servir pour mieux comprendre le
+          contexte de vos demandes.
         </Text>
         <View style={styles.formCard}>
           <Text style={styles.sectionTitle}>Ajouter un projet</Text>

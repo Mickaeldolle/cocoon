@@ -41,6 +41,9 @@ export default function ProfileScreen() {
   const setMode = useThemeStore((state) => state.setMode);
   const client = useQueryClient();
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [assistantName, setAssistantName] = useState(user?.assistant_name ?? '');
+  const [savingAssistantName, setSavingAssistantName] = useState(false);
+  const [assistantNameNotice, setAssistantNameNotice] = useState<string | null>(null);
   const colors = (mode === 'light' ? lightTheme : darkTheme).colors;
   const styles = makeStyles(colors);
   const profile = useQuery({
@@ -118,6 +121,55 @@ export default function ProfileScreen() {
             ))}
           </View>
         </View>
+        <View style={styles.themeCard}>
+          <Text style={styles.themeTitle}>Nom de l’assistant</Text>
+          <Text style={styles.devicesIntro}>Laissez vide pour afficher Cocoon.</Text>
+          <TextInput
+            accessibilityLabel="Nom de l’assistant"
+            maxLength={40}
+            onChangeText={(value) => {
+              setAssistantName(value);
+              setAssistantNameNotice(null);
+            }}
+            placeholder="Cocoon"
+            placeholderTextColor={colors.muted}
+            style={styles.input}
+            value={assistantName}
+          />
+          <Pressable
+            auditAction="profile.assistant-name.save"
+            accessibilityRole="button"
+            disabled={!token || savingAssistantName}
+            onPress={() => {
+              if (!token) return;
+              setSavingAssistantName(true);
+              void authApi
+                .setAssistantName(token, assistantName.trim() || null)
+                .then((updated) => {
+                  if (useSessionStore.getState().accessToken !== token) return;
+                  useSessionStore.setState({ user: updated });
+                  setAssistantName(updated.assistant_name ?? '');
+                  setAssistantNameNotice('Nom enregistré.');
+                })
+                .catch((error) =>
+                  setAssistantNameNotice(
+                    error instanceof Error ? error.message : 'Impossible d’enregistrer le nom.',
+                  ),
+                )
+                .finally(() => setSavingAssistantName(false));
+            }}
+            style={styles.retry}
+          >
+            <Text style={styles.retryText}>
+              {savingAssistantName ? 'Enregistrement…' : 'Enregistrer le nom'}
+            </Text>
+          </Pressable>
+          {assistantNameNotice ? (
+            <Text accessibilityRole="alert" style={styles.devicesIntro}>
+              {assistantNameNotice}
+            </Text>
+          ) : null}
+        </View>
         <DeviceManager token={token!} devices={devices.data ?? []} styles={styles} />
         {Platform.OS === 'web' && token ? (
           <PasskeyManager token={token} userId={user!.id} styles={styles} colors={colors} />
@@ -133,7 +185,7 @@ export default function ProfileScreen() {
         >
           <Text style={styles.memoryButtonTitle}>Gérer ma mémoire</Text>
           <Text style={styles.memoryButtonText}>
-            Voir, corriger ou oublier ce que Cocoon retient.
+            Voir, corriger ou oublier ce que {user?.assistant_name ?? 'Cocoon'} retient.
           </Text>
         </Pressable>
         <Pressable
@@ -144,7 +196,8 @@ export default function ProfileScreen() {
         >
           <Text style={styles.memoryButtonTitle}>Gérer mes projets</Text>
           <Text style={styles.memoryButtonText}>
-            Ajouter un projet et préciser le contexte que Cocoon peut retenir.
+            Ajouter un projet et préciser le contexte que {user?.assistant_name ?? 'Cocoon'} peut
+            retenir.
           </Text>
         </Pressable>
         {profile.isPending ? (

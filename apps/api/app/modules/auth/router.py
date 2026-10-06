@@ -41,6 +41,7 @@ from app.modules.auth.models import (
     WebPushSubscription,
 )
 from app.modules.auth.schemas import (
+    AssistantNameUpdate,
     ConsentResponse,
     ConsentUpdate,
     DeviceResponse,
@@ -281,6 +282,30 @@ def logout(
 
 @router.get("/me", response_model=UserResponse)
 def me(current_user: User = Depends(get_current_user)) -> User:
+    return current_user
+
+
+@router.put("/assistant-name", response_model=UserResponse)
+def update_assistant_name(
+    payload: AssistantNameUpdate,
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> User:
+    current_user.assistant_name = payload.assistant_name
+    session.commit()
+    session.refresh(current_user)
+    return current_user
+
+
+@router.post("/welcome/complete", response_model=UserResponse)
+def complete_welcome(
+    current_user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> User:
+    if current_user.welcome_completed_at is None:
+        current_user.welcome_completed_at = datetime.now(UTC)
+        session.commit()
+        session.refresh(current_user)
     return current_user
 
 
