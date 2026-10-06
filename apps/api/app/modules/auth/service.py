@@ -12,7 +12,7 @@ from app.core.security import (
     verify_password,
 )
 from app.modules.auth.models import Device, User, UserSession
-from app.modules.auth.schemas import DeviceInput, TokenPair
+from app.modules.auth.schemas import DeviceInput, TokenPair, UserResponse
 
 
 def _upsert_device(session: Session, user: User, device_data: DeviceInput) -> Device:
@@ -53,6 +53,7 @@ def _issue_for_device(session: Session, user: User, device: Device) -> TokenPair
     return TokenPair(
         access_token=create_access_token(user_id=user.id, session_id=user_session.id),
         refresh_token=refresh_token,
+        user=UserResponse.model_validate(user),
     )
 
 

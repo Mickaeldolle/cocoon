@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 from pydantic import BaseModel
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -600,14 +600,15 @@ def list_secret_conversations(
             .distinct()
         )
     )
-    clear_secret_nudge(session, user_id)
-    session.commit()
-    return [
+    response = [
         conversation_response(conversation, membership).model_copy(
             update={"has_unread_messages": conversation.id in unread_ids}
         )
         for conversation, membership in rows
     ]
+    clear_secret_nudge(session, user_id)
+    session.commit()
+    return response
 
 
 @router.post(
@@ -751,9 +752,7 @@ def list_secret_messages(
         session, conversation_id, authenticated.authenticated.user.id
     )
     session.scalar(
-        select(User.id)
-        .where(User.id == authenticated.authenticated.user.id)
-        .with_for_update()
+        select(User.id).where(User.id == authenticated.authenticated.user.id).with_for_update()
     )
     messages = list(
         session.scalars(
@@ -764,8 +763,6 @@ def list_secret_messages(
         )
     )
     membership.last_read_at = datetime.now(UTC)
-    clear_secret_nudge(session, authenticated.authenticated.user.id)
-    session.commit()
     # Read receipts are visible only inside this accepted, unlocked hidden conversation.
     memberships = list(
         session.scalars(
@@ -776,7 +773,12 @@ def list_secret_messages(
             )
         )
     )
-    return [message_response(message, memberships) for message in reversed(messages)]
+    # Build detached responses before commit expires the ORM objects. Otherwise each
+    # message is fetched again, adding up to 100 database round trips per poll.
+    response = [message_response(message, memberships) for message in reversed(messages)]
+    clear_secret_nudge(session, authenticated.authenticated.user.id)
+    session.commit()
+    return response
 
 
 @router.get("/conversations/{conversation_id}/typing")
@@ -821,6 +823,7 @@ def set_secret_typing(
 def send_secret_message(
     conversation_id: UUID,
     payload: MessageCreate,
+    background_tasks: BackgroundTasks,
     authenticated: AuthenticatedSecretSession = Depends(get_authenticated_secret_session),
     session: Session = Depends(get_session),
 ) -> MessageResponse:
@@ -862,10 +865,15 @@ def send_secret_message(
     secret_typing.update(conversation_id, user_id, False)
     response = message_response(message, [membership])
     session.close()
+    background_tasks.add_task(dispatch_secret_notifications, alert_ids)
+    return response
+
+
+def dispatch_secret_notifications(alert_ids: list[UUID]) -> None:
+    """Attempt push after the HTTP response; the durable outbox retains retries."""
     for alert_id in alert_ids:
         try:
             send_pending_notifications(datetime.now(UTC), max_items=1, item_id=alert_id)
         except Exception:
             # The message is already committed; push failure must not make the client resend it.
             notification_logger.exception("secret_push_dispatch_failed")
-    return response

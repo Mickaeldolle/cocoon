@@ -18,6 +18,7 @@ export type TokenPair = {
   access_token: string;
   refresh_token: string;
   token_type: 'bearer';
+  user?: CurrentUser | null;
 };
 
 export type SecretAccess = {

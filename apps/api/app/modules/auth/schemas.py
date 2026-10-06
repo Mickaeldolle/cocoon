@@ -73,10 +73,22 @@ class ConsentResponse(BaseModel):
     active: bool
 
 
+class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    email: EmailStr
+    display_name: str
+    is_superadmin: bool
+    enable_assistant: bool
+    created_at: datetime
+
+
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    user: UserResponse | None = None
 
 
 class SecretUnlockRequest(BaseModel):
@@ -108,14 +120,3 @@ class SecretPasskeyRegistrationRequest(BaseModel):
 class SecretPasskeyCredentialRequest(BaseModel):
     challenge_id: UUID
     credential: dict[str, Any]
-
-
-class UserResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    email: EmailStr
-    display_name: str
-    is_superadmin: bool
-    enable_assistant: bool
-    created_at: datetime

@@ -104,6 +104,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
         ? secretApi.getConversation(token!, secretToken!, id)
         : conversationsApi.get(token!, id),
     retry: !secret,
+    staleTime: 15_000,
   });
   const messages = useQuery({
     queryKey: messagesKey,
@@ -113,6 +114,7 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
         ? secretApi.listMessages(token!, secretToken!, id)
         : conversationsApi.listMessages(token!, id),
     refetchInterval: 4000,
+    staleTime: 3000,
     retry: !secret,
   });
   const secretTyping = useQuery({
@@ -275,13 +277,20 @@ export function ConversationDetailScreen({ secret = false }: { secret?: boolean 
         ? secretApi.sendMessage(token!, secretToken!, id, text, localId)
         : conversationsApi.sendMessage(token!, id, text, localId),
     onSuccess: (saved, { localId }) => {
-      setLocalMessages((items) =>
-        items.map((item) =>
-          item.localId === localId ? { ...item, delivery: 'sent', serverId: saved.id } : item,
-        ),
-      );
+      if (
+        useSessionStore.getState().user?.id !== userId ||
+        (secret && useSecretAccessStore.getState().token !== secretToken)
+      ) {
+        return;
+      }
+      client.setQueryData<Message[]>(messagesKey, (items) => {
+        const previous = items ?? [];
+        return previous.some((message) => message.id === saved.id)
+          ? previous.map((message) => (message.id === saved.id ? saved : message))
+          : [...previous, saved];
+      });
+      setLocalMessages((items) => items.filter((item) => item.localId !== localId));
       setError(null);
-      void client.invalidateQueries({ queryKey: messagesKey });
       void client.invalidateQueries({
         queryKey: secret ? ['secret', 'conversations'] : ['conversations', userId],
       });

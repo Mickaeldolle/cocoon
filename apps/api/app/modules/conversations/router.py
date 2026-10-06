@@ -67,7 +67,9 @@ def message_response(message: Message, memberships: list[ConversationMember]) ->
         read_by_count=sum(
             member.user_id != message.sender_id
             and member.last_read_at is not None
-            and member.last_read_at >= message.created_at
+            # SQLite returns naive timestamps; PostgreSQL retains UTC offsets.
+            and member.last_read_at.replace(tzinfo=member.last_read_at.tzinfo or UTC)
+            >= message.created_at.replace(tzinfo=message.created_at.tzinfo or UTC)
             for member in memberships
         ),
     )

@@ -41,6 +41,7 @@ export default function SecretConversationsScreen() {
     queryKey: secretConversationsKey,
     enabled: Boolean(accessToken && secretToken),
     queryFn: () => secretApi.listConversations(accessToken!, secretToken!),
+    staleTime: 15_000,
     refetchInterval: 30_000,
     retry: false,
   });

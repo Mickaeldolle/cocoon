@@ -46,7 +46,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     }
     await saveRefreshToken(tokens.refresh_token);
-    const user = await authApi.me(tokens.access_token);
+    // Older API deployments still require /me; new ones return the fresh profile
+    // with the tokens, avoiding a second sequential request on cold start.
+    const user = tokens.user ?? (await authApi.me(tokens.access_token));
     set({ accessToken: tokens.access_token, user, initialized: true, sessionExpired: false });
   },
 

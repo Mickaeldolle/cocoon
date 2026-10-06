@@ -426,6 +426,57 @@ test('session bootstrap waits for biometric confirmation before refreshing', asy
   assert.equal(store.accessToken, null);
 });
 
+test('session restore uses the fresh token profile and supports older API responses', async () => {
+  for (const withProfile of [true, false]) {
+    let state;
+    let meCalls = 0;
+    let saved = null;
+    const profile = { id: 'user', enable_assistant: false, is_superadmin: false };
+    const store = load('src/stores/session-store.ts', {
+      zustand: {
+        create: (initialize) => {
+          state = initialize(
+            (change) => Object.assign(state, change),
+            () => state,
+          );
+          return state;
+        },
+      },
+      '@/src/services/android-biometric-login': {
+        isAndroidBiometricLoginEnabled: async () => false,
+      },
+      '@/src/services/notifications': {
+        unsubscribeCurrentWebPush: async () => undefined,
+      },
+      '@/src/services/api': {
+        ApiError: class ApiError extends Error {},
+        loadRefreshToken: async () => 'old-refresh',
+        saveRefreshToken: async (token) => {
+          saved = token;
+        },
+        setAccessTokenRenewer: () => undefined,
+        authApi: {
+          refresh: async () => ({
+            access_token: 'new-access',
+            refresh_token: 'new-refresh',
+            ...(withProfile ? { user: profile } : {}),
+          }),
+          me: async () => {
+            meCalls += 1;
+            return profile;
+          },
+        },
+      },
+    }).useSessionStore;
+    await store.restore();
+    assert.equal(saved, 'new-refresh');
+    assert.equal(store.initialized, true);
+    assert.equal(store.user, profile);
+    assert.equal(store.accessToken, 'new-access');
+    assert.equal(meCalls, withProfile ? 0 : 1);
+  }
+});
+
 test('expired refresh token clears the session for login and passkey recovery', async () => {
   let state;
   let cleared = false;
