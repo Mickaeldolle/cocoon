@@ -102,6 +102,11 @@ from app.modules.auth.dependencies import (
 )
 from app.modules.auth.models import User, WebPushSubscription
 from app.modules.memory.context import accessible_memory_summary_keys
+from app.modules.memory.models import ContextDependency, MemoryExclusion, MemoryUsage
+from app.modules.memory.policy import memory_allowed
+from app.modules.memory.service import exclude_source
+from app.modules.memory.text import summary_key as normalized_summary_key
+from app.modules.neural.models import MemoryItem
 from app.modules.personal.models import PersonalTask
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
@@ -298,20 +303,38 @@ def _sse(event: str, payload: object) -> str:
 
 
 def _persist_chat_reply(
-    session: Session, user_id: UUID, thread_id: UUID, reply: object, *, runtime: str = "local"
+    session: Session,
+    user_id: UUID,
+    thread_id: UUID,
+    reply: object,
+    *,
+    runtime: str = "local",
+    recalled_memories: list[dict[str, object]] | None = None,
+    recent_turns: list[dict[str, str]] | None = None,
+    personal_context: list[dict[str, object]] | None = None,
+    source_user_message_id: UUID | None = None,
 ) -> AssistantChatResponse:
     assistant_message = AssistantMessage(
         thread_id=thread_id,
         role=AssistantMessageRole.ASSISTANT,
         content=reply.text,
+        source_user_message_id=source_user_message_id,
+        working_choices=reply.choices or None,
         created_at=datetime.now(UTC),
     )
     session.add(assistant_message)
     session.flush()
+    _record_memory_usage(
+        session,
+        assistant_message.id,
+        recalled_memories or [],
+        recent_turns or [],
+        personal_context or [],
+    )
     known = accessible_memory_summary_keys(session, user_id)
     proposals: list[AssistantProposal] = []
-    for summary in reply.memories:
-        summary_key = " ".join(summary.casefold().split())
+    for summary in reply.memories if memory_allowed(session, user_id) else []:
+        summary_key = normalized_summary_key(summary)
         if summary_key in known:
             continue
         proposals.append(
@@ -339,6 +362,64 @@ def _persist_chat_reply(
         remembered=[],
         runtime=runtime,
     )
+
+
+def _record_memory_usage(
+    session: Session,
+    message_id: UUID,
+    memories: list[dict[str, object]],
+    recent_turns: list[dict[str, str]],
+    personal_context: list[dict[str, object]],
+) -> None:
+    memory_ids = {UUID(str(memory["id"])) for memory in memories}
+    ids = {
+        UUID(item["source_message_id"]) for item in recent_turns if item.get("source_message_id")
+    }
+    for block in personal_context:
+        if block.get("source") == "conversation.working":
+            ids.update(UUID(item["source_message_id"]) for item in block.get("entries", []))
+    message = session.get(AssistantMessage, message_id)
+    current_source = message.source_user_message_id or session.scalar(
+        select(AssistantMessage.id)
+        .where(
+            AssistantMessage.thread_id == message.thread_id,
+            AssistantMessage.role == AssistantMessageRole.USER,
+            AssistantMessage.created_at <= message.created_at,
+        )
+        .order_by(AssistantMessage.created_at.desc())
+        .limit(1)
+    )
+    if current_source:
+        ids.add(current_source)
+    memory_ids.update(
+        session.scalars(select(MemoryUsage.memory_id).where(MemoryUsage.message_id.in_(ids)))
+    )
+    for memory_id in memory_ids:
+        session.add(MemoryUsage(message_id=message_id, memory_id=memory_id))
+    for source_id in ids:
+        session.add(ContextDependency(message_id=message_id, source_message_id=source_id))
+    owner_id = session.scalar(
+        select(AssistantThread.user_id).where(AssistantThread.id == message.thread_id)
+    )
+    excluded_parent = session.scalar(
+        select(MemoryExclusion.source_id)
+        .where(
+            MemoryExclusion.user_id == owner_id,
+            MemoryExclusion.source_type == "message",
+            MemoryExclusion.source_id.in_(ids),
+        )
+        .limit(1)
+    )
+    forgotten_memory = session.scalar(
+        select(MemoryItem.id)
+        .where(
+            MemoryItem.id.in_(memory_ids),
+            MemoryItem.deleted_at.is_not(None),
+        )
+        .limit(1)
+    )
+    if excluded_parent is not None or forgotten_memory is not None:
+        exclude_source(session, owner_id, "message", message_id)
 
 
 @router.post(
@@ -396,21 +477,22 @@ async def create_chat_turn(
                 remembered=[],
                 runtime="local",
             )
-    recent_turns = recent_messages(session, thread.id, limit=10)
-    recalled_memories = accessible_memory_summaries(
-        session, current_user.id, limit=12, query=payload.text
+    recent_turns = recent_messages(session, thread.id, limit=10, include_sources=True)
+    recalled_memories = await run_in_threadpool(
+        accessible_memory_summaries, session, current_user.id, limit=12, query=payload.text
     )
-    personal_context = accessible_personal_context(session, current_user.id, limit=8)
+    personal_context = accessible_personal_context(
+        session, current_user.id, limit=8, query=payload.text
+    )
     # Commit the user's message before model work so a provider outage never loses it.
-    session.add(
-        AssistantMessage(
-            thread_id=thread.id,
-            role=AssistantMessageRole.USER,
-            idempotency_key=idempotency_key,
-            content=payload.text,
-            created_at=datetime.now(UTC),
-        )
+    user_message = AssistantMessage(
+        thread_id=thread.id,
+        role=AssistantMessageRole.USER,
+        idempotency_key=idempotency_key,
+        content=payload.text,
+        created_at=datetime.now(UTC),
     )
+    session.add(user_message)
     # Do not hold a database transaction while a local model can take several minutes.
     session.commit()
     reply = await run_in_threadpool(
@@ -421,14 +503,19 @@ async def create_chat_turn(
         thread_id=thread.id,
         role=AssistantMessageRole.ASSISTANT,
         content=reply.text,
+        source_user_message_id=user_message.id,
+        working_choices=reply.choices or None,
         created_at=datetime.now(UTC),
     )
     session.add(assistant_message)
     session.flush()
+    _record_memory_usage(
+        session, assistant_message.id, recalled_memories, recent_turns, personal_context
+    )
     known = accessible_memory_summary_keys(session, current_user.id)
     proposals: list[AssistantProposal] = []
-    for summary in reply.memories:
-        summary_key = " ".join(summary.casefold().split())
+    for summary in reply.memories if memory_allowed(session, current_user.id) else []:
+        summary_key = normalized_summary_key(summary)
         if summary_key in known:
             continue
         proposals.append(
@@ -562,22 +649,27 @@ async def create_streaming_chat_turn(
             thread.id,
             limit=10,
             exclude_message_id=previous_user_message.id if previous_user_message else None,
+            include_sources=True,
         )
-        recalled_memories = accessible_memory_summaries(
-            session, current_user.id, limit=12, query=payload.text
+        recalled_memories = await run_in_threadpool(
+            accessible_memory_summaries, session, current_user.id, limit=12, query=payload.text
         )
-        personal_context = accessible_personal_context(session, current_user.id, limit=8)
+        personal_context = accessible_personal_context(
+            session, current_user.id, limit=8, query=payload.text
+        )
         if previous_user_message is None:
-            session.add(
-                AssistantMessage(
-                    thread_id=thread.id,
-                    role=AssistantMessageRole.USER,
-                    idempotency_key=idempotency_key,
-                    content=payload.text,
-                    created_at=datetime.now(UTC),
-                )
+            user_message = AssistantMessage(
+                thread_id=thread.id,
+                role=AssistantMessageRole.USER,
+                idempotency_key=idempotency_key,
+                content=payload.text,
+                created_at=datetime.now(UTC),
             )
+            session.add(user_message)
             session.commit()
+        else:
+            user_message = previous_user_message
+            session.commit()  # Persist rebuilt working context before provider work on a retry.
     except Exception:
         _release_stream_turn(thread.id, claimed_key)
         raise
@@ -622,7 +714,15 @@ async def create_streaming_chat_turn(
                     yield _sse("delta", {"text": delta})
             reply = parse_streamed_answer(raw_content, payload.text)
             response = _persist_chat_reply(
-                session, current_user.id, thread.id, reply, runtime="local"
+                session,
+                current_user.id,
+                thread.id,
+                reply,
+                runtime="local",
+                recalled_memories=recalled_memories,
+                recent_turns=recent_turns,
+                personal_context=personal_context,
+                source_user_message_id=user_message.id,
             )
             yield _sse("complete", response.model_dump(mode="json"))
         except HTTPException as error:
@@ -930,14 +1030,17 @@ def create_test_notification(
             raise HTTPException(
                 status_code=503, detail="Configuration VAPID incomplète ou invalide."
             )
-        if session.scalar(
-            select(WebPushSubscription.id)
-            .where(
-                WebPushSubscription.user_id == current_user.id,
-                WebPushSubscription.device_id == device.id,
+        if (
+            session.scalar(
+                select(WebPushSubscription.id)
+                .where(
+                    WebPushSubscription.user_id == current_user.id,
+                    WebPushSubscription.device_id == device.id,
+                )
+                .limit(1)
             )
-            .limit(1)
-        ) is None:
+            is None
+        ):
             raise HTTPException(
                 status_code=409, detail="Activez d'abord les notifications du navigateur."
             )

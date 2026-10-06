@@ -23,7 +23,7 @@ from app.modules.assistant.models import (
 )
 from app.modules.assistant.rate_limit import AssistantRateLimiter
 from app.modules.assistant.router import create_voice_transcription
-from app.modules.auth.models import User
+from app.modules.auth.models import User, UserConsent
 from app.modules.neural.models import MemoryItem, MemoryLayer
 from app.modules.personal.models import GroceryItem, PersonalTask, TrainingSession
 
@@ -75,6 +75,17 @@ def enable_assistant_for(client: TestClient, email: str) -> None:
         user = session.scalar(select(User).where(User.email == email))
         assert user is not None
         user.enable_assistant = True
+        if (
+            session.scalar(
+                select(UserConsent).where(
+                    UserConsent.user_id == user.id, UserConsent.policy_key == "assistant.memory"
+                )
+            )
+            is None
+        ):
+            session.add(
+                UserConsent(user_id=user.id, policy_key="assistant.memory", policy_version=1)
+            )
         session.commit()
 
 
@@ -95,7 +106,9 @@ def test_assistant_status_requires_auth_and_hides_provider_url(
     response = client.get("/api/assistant/status", headers=authenticated_headers(client))
     assert response.status_code == 200
     assert response.json() == {
-        "available": False, "provider": "ollama", "model": "qwen3:8b",
+        "available": False,
+        "provider": "ollama",
+        "model": "qwen3:8b",
     }
 
 
@@ -120,11 +133,14 @@ def test_generation_route_limits_each_user(
         user.enable_assistant = True
         session.commit()
     enable_assistant_for(client, "autre@example.com")
-    assert client.post(
-        "/api/assistant/organize",
-        headers={"Authorization": f"Bearer {token}"},
-        json=request,
-    ).status_code == 200
+    assert (
+        client.post(
+            "/api/assistant/organize",
+            headers={"Authorization": f"Bearer {token}"},
+            json=request,
+        ).status_code
+        == 200
+    )
 
 
 def test_assistant_organizes_thought_with_tags_and_reminder_date(client: TestClient) -> None:
@@ -362,9 +378,7 @@ def test_streaming_chat_uses_only_a_validated_free_model(
     monkeypatch.setattr(
         assistant_service,
         "llm_stream",
-        lambda _messages, **kwargs: (
-            used_models.append(kwargs.get("model")) or iter(["Bonjour !"])
-        ),
+        lambda _messages, **kwargs: used_models.append(kwargs.get("model")) or iter(["Bonjour !"]),
     )
     auth = authenticated_headers(client)
     rejected = client.post(
@@ -380,7 +394,7 @@ def test_streaming_chat_uses_only_a_validated_free_model(
         json={"text": "Bonjour", "model": "vendor/chat:free"},
     )
     assert accepted.status_code == 200
-    assert 'event: complete' in accepted.text
+    assert "event: complete" in accepted.text
     assert used_models == ["vendor/chat:free"]
 
 
@@ -434,26 +448,24 @@ def test_streaming_chat_retries_failed_turn_without_duplicate_user_message(
     monkeypatch.setattr(assistant_service, "llm_stream", model)
     auth = authenticated_headers(client)
     headers = {**auth, "X-Assistant-Idempotency-Key": "stream-retry-1"}
-    first = client.post(
-        "/api/assistant/chat/stream", headers=headers, json={"text": "Bonjour"}
-    )
+    first = client.post("/api/assistant/chat/stream", headers=headers, json={"text": "Bonjour"})
     assert "event: error" in first.text
     failed_history = client.get("/api/assistant/history", headers=auth).json()["messages"]
     assert len(failed_history) == 1
     assert failed_history[0]["idempotency_key"] == "stream-retry-1"
 
-    repeated = client.post(
-        "/api/assistant/chat/stream", headers=headers, json={"text": "Bonjour"}
-    )
+    repeated = client.post("/api/assistant/chat/stream", headers=headers, json={"text": "Bonjour"})
     assert repeated.status_code == 409
     mismatch = client.post(
-        "/api/assistant/chat/stream", headers=headers,
+        "/api/assistant/chat/stream",
+        headers=headers,
         json={"text": "Autre message", "retry": True},
     )
     assert mismatch.status_code == 409
 
     retried = client.post(
-        "/api/assistant/chat/stream", headers=headers,
+        "/api/assistant/chat/stream",
+        headers=headers,
         json={"text": "Bonjour", "retry": True},
     )
     assert "event: complete" in retried.text
@@ -480,7 +492,8 @@ def test_streaming_retry_does_not_replay_a_later_turn(
         "/api/assistant/chat/stream", headers=second_headers, json={"text": "Question deux"}
     )
     retried = client.post(
-        "/api/assistant/chat/stream", headers=first_headers,
+        "/api/assistant/chat/stream",
+        headers=first_headers,
         json={"text": "Question un", "retry": True},
     )
 
@@ -489,7 +502,10 @@ def test_streaming_retry_does_not_replay_a_later_turn(
     assert '"content": "Réponse un"' in retried.text
     history = client.get("/api/assistant/history", headers=auth).json()["messages"]
     assert [message["content"] for message in history] == [
-        "Question un", "Question deux", "Réponse deux", "Réponse un"
+        "Question un",
+        "Question deux",
+        "Réponse deux",
+        "Réponse un",
     ]
 
 
@@ -533,9 +549,7 @@ def test_small_agent_harness_reports_missing_model(
 ) -> None:
     monkeypatch.setattr(assistant_service, "llm_chat", lambda _messages: None)
     auth = authenticated_headers(client)
-    response = client.post(
-        "/api/assistant/chat", headers=auth, json={"text": "Bonjour"}
-    )
+    response = client.post("/api/assistant/chat", headers=auth, json={"text": "Bonjour"})
     assert response.status_code == 503
     assert response.json()["detail"] == "Le modèle est indisponible. Réessayez dans un instant."
     history = client.get("/api/assistant/history", headers=auth)
@@ -601,9 +615,7 @@ def test_voice_transcription_rejects_empty_and_oversized_audio(
         assistant_voice.transcribe_audio(b"", "audio/mp4")
     assert empty.value.status_code == 422
     with pytest.raises(Exception) as oversized:
-        assistant_voice.transcribe_audio(
-            b"x" * (assistant_voice.MAX_VOICE_BYTES + 1), "audio/mp4"
-        )
+        assistant_voice.transcribe_audio(b"x" * (assistant_voice.MAX_VOICE_BYTES + 1), "audio/mp4")
     assert oversized.value.status_code == 413
 
 
@@ -892,13 +904,13 @@ def test_cancelling_assistant_proposal_is_terminal_and_serialized(
     monkeypatch.setattr(
         assistant_service,
         "llm_chat",
-        lambda _messages: '{"content":"Je propose une tâche.","proposals":[{"kind":"task",'
-        '"payload":{"title":"Préparer le dossier"}}]}',
+        lambda _messages: (
+            '{"content":"Je propose une tâche.","proposals":[{"kind":"task",'
+            '"payload":{"title":"Préparer le dossier"}}]}'
+        ),
     )
     auth = authenticated_headers(client)
-    response = client.post(
-        "/api/assistant/turn", headers=auth, json={"text": "Prépare le dossier"}
-    )
+    response = client.post("/api/assistant/turn", headers=auth, json={"text": "Prépare le dossier"})
     assert response.status_code == 201
     proposal_id = response.json()["message"]["proposals"][0]["id"]
 
@@ -1041,8 +1053,7 @@ def test_confirming_one_assistant_alternative_cancels_the_other(
     with app.state.test_session_factory() as session:
         stored = session.scalars(
             select(AssistantProposal).where(
-                AssistantProposal.assistant_message_id
-                == UUID(response.json()["message"]["id"])
+                AssistantProposal.assistant_message_id == UUID(response.json()["message"]["id"])
             )
         ).all()
         statuses = {str(item.id): item.status for item in stored}

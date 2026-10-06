@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.commands.run_capture_worker import process_once
 from app.main import app
 from app.modules.assistant.models import ProposalExecution
-from app.modules.auth.models import User
+from app.modules.auth.models import User, UserConsent
 from app.modules.neural import service as neural_service
 from app.modules.neural import worker as neural_worker
 from app.modules.neural.models import (
@@ -42,6 +42,7 @@ def headers(client: TestClient, email: str) -> dict[str, str]:
         user = session.scalar(select(User).where(User.email == email))
         assert user is not None
         user.enable_assistant = True
+        session.add(UserConsent(user_id=user.id, policy_key="assistant.memory", policy_version=1))
         session.commit()
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
@@ -423,8 +424,7 @@ def test_capture_proposal_can_be_cancelled_and_cannot_be_confirmed_afterward(
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
     assert (
-        client.post(f"/api/neural-proposals/{proposal_id}/confirm", headers=auth).status_code
-        == 409
+        client.post(f"/api/neural-proposals/{proposal_id}/confirm", headers=auth).status_code == 409
     )
     repeated = client.post(f"/api/neural-proposals/{proposal_id}/cancel", headers=auth)
     assert repeated.status_code == 200
@@ -453,9 +453,7 @@ def test_running_capture_run_can_be_cancelled_by_its_owner(client: TestClient) -
 
 def test_separate_capture_worker_reclaims_a_queued_run(client: TestClient) -> None:
     auth = headers(client, "capture-worker@example.com")
-    result = client.post(
-        "/api/captures", headers=auth, json={"text": "Une idée à revoir"}
-    ).json()
+    result = client.post("/api/captures", headers=auth, json={"text": "Une idée à revoir"}).json()
     session = app.state.test_session_factory()
     try:
         run = session.get(CaptureRun, UUID(result["run_id"]))
@@ -467,10 +465,7 @@ def test_separate_capture_worker_reclaims_a_queued_run(client: TestClient) -> No
     finally:
         session.close()
 
-    assert (
-        process_once("test-capture-worker", app.state.test_session_factory)
-        == result["run_id"]
-    )
+    assert process_once("test-capture-worker", app.state.test_session_factory) == result["run_id"]
     resumed = client.get(f"/api/runs/{result['run_id']}", headers=auth)
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "completed"
@@ -486,9 +481,7 @@ def test_capture_queue_endpoint_defers_processing_to_worker(client: TestClient) 
     )
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
-    assert [event["event_type"] for event in response.json()["events"]] == [
-        "capture_persisted"
-    ]
+    assert [event["event_type"] for event in response.json()["events"]] == ["capture_persisted"]
 
     run_id = response.json()["id"]
     assert process_once("queued-capture-worker", client.app.state.test_session_factory) == run_id
@@ -508,9 +501,7 @@ def test_cancellation_during_understanding_does_not_persist_proposals(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     auth = headers(client, "cancel-during-understanding@example.com")
-    result = client.post(
-        "/api/captures", headers=auth, json={"text": "Une idée à annuler"}
-    ).json()
+    result = client.post("/api/captures", headers=auth, json={"text": "Une idée à annuler"}).json()
     run_id = UUID(result["run_id"])
 
     session = app.state.test_session_factory()

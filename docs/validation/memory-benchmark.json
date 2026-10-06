@@ -1,0 +1,39 @@
+{
+  "generated_at": "2026-10-06T12:22:05.466014+00:00",
+  "backend": "isolated_sqlite",
+  "limitations": "Synthetic lexical retrieval only; no live LLM, embeddings, user rating or PostgreSQL concurrency qualification.",
+  "results": [
+    {
+      "size": 10,
+      "queries": 3,
+      "recall_at_5": 1.0,
+      "legacy_recent_100_recall_at_5": 1.0,
+      "unrelated_queries_with_results": 0,
+      "duration_ms": 29.41
+    },
+    {
+      "size": 100,
+      "queries": 3,
+      "recall_at_5": 1.0,
+      "legacy_recent_100_recall_at_5": 1.0,
+      "unrelated_queries_with_results": 0,
+      "duration_ms": 36.61
+    },
+    {
+      "size": 500,
+      "queries": 3,
+      "recall_at_5": 1.0,
+      "legacy_recent_100_recall_at_5": 0.0,
+      "unrelated_queries_with_results": 0,
+      "duration_ms": 61.53
+    },
+    {
+      "size": 1000,
+      "queries": 3,
+      "recall_at_5": 1.0,
+      "legacy_recent_100_recall_at_5": 0.0,
+      "unrelated_queries_with_results": 0,
+      "duration_ms": 98.75
+    }
+  ]
+}

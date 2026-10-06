@@ -51,6 +51,18 @@ class Settings(BaseSettings):
     assistant_requests_per_minute: int = Field(default=30, ge=1, le=1000)
     assistant_max_tool_calls: int = Field(default=4, ge=1, le=10)
     assistant_tool_budget_ms: int = Field(default=2000, ge=100, le=10000)
+    # Optional local memory search, independent from the conversational provider.
+    memory_embeddings_enabled: bool = False
+    memory_embedding_base_url: str = "http://localhost:11434"
+    memory_embedding_model: str = "qwen3-embedding:0.6b"
+    memory_embedding_revision: str = "1"
+    memory_embedding_dimensions: int = Field(default=1024, ge=1, le=4096)
+    memory_embedding_timeout_seconds: float = Field(default=60, gt=0, le=600)
+    memory_query_timeout_seconds: float = Field(default=3, gt=0, le=30)
+    memory_vector_enabled: bool = False
+    memory_min_similarity: float = Field(default=0.65, ge=0, le=1)
+    memory_context_tokens: int = Field(default=1200, ge=100, le=8000)
+    memory_worker_interval_seconds: int = Field(default=10, ge=1, le=3600)
     # The MVP uses one server-side OpenAI-compatible provider, normally Ollama.
     assistant_runtime: str = Field(default="local", pattern=r"^local$")
     # Speech-to-text is deliberately separate from the chat model. It is optional and is
@@ -77,6 +89,30 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.startswith("postgresql://"):
             return "postgresql+psycopg://" + value.removeprefix("postgresql://")
         return value
+
+    @field_validator("memory_embedding_base_url")
+    @classmethod
+    def validate_memory_endpoint(cls, value: str) -> str:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("Le runtime d'embedding requiert une URL HTTP(S) sans identifiants")
+        return value.rstrip("/")
+
+    @field_validator("memory_embedding_model", "memory_embedding_revision")
+    @classmethod
+    def validate_memory_model(cls, value: str) -> str:
+        if not value.strip() or len(value) > 160:
+            raise ValueError("Le modèle et sa révision doivent être non vides et bornés")
+        return value.strip()
 
     @field_validator("assistant_runtime", mode="before")
     @classmethod

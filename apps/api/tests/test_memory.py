@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.modules.auth.models import User
+from app.modules.auth.models import User, UserConsent
 from app.modules.memory.conflicts import supersede_conflicting_preference
 from app.modules.memory.context import ContextBuilder, accessible_memory_summary_keys
 from app.modules.memory.repository import MemoryRepository
@@ -22,7 +22,7 @@ from app.modules.neural.models import (
 
 
 def register(client: TestClient, email: str) -> dict[str, str]:
-    return client.post(
+    tokens = client.post(
         "/api/auth/register",
         json={
             "email": email,
@@ -33,6 +33,12 @@ def register(client: TestClient, email: str) -> dict[str, str]:
             "platform": "ios",
         },
     ).json()
+    with app.state.test_session_factory() as session:
+        user = session.query(User).filter_by(email=email).one()
+        user.enable_assistant = True
+        session.add(UserConsent(user_id=user.id, policy_key="assistant.memory", policy_version=1))
+        session.commit()
+    return tokens
 
 
 def test_memory_repository_filters_owner_scope_and_deleted_rows(client: TestClient) -> None:
@@ -87,10 +93,11 @@ def test_memory_repository_filters_owner_scope_and_deleted_rows(client: TestClie
         assert ContextBuilder().memory_summaries(session, first.id, query="Préférence A") == [
             "Préférence A"
         ]
-        assert ContextBuilder().memory_summaries(session, first.id, query="Préférence B") == [
-            "Préférence A"
-        ]
-        assert accessible_memory_summary_keys(session, first.id) == {"préférence a"}
+        assert (
+            ContextBuilder().memory_summaries(session, first.id, query="information inexistante")
+            == []
+        )
+        assert accessible_memory_summary_keys(session, first.id) == {"preference a"}
     finally:
         session.close()
 
@@ -120,7 +127,6 @@ def test_memory_endpoints_correct_and_forget_without_deleting_capture(client: Te
     finally:
         session.close()
 
-
     listed = client.get("/api/memories", headers=auth)
     assert listed.status_code == 200
     assert listed.json()["memories"][0]["summary"] == "Je préfère le thé"
@@ -143,7 +149,7 @@ def test_memory_endpoints_correct_and_forget_without_deleting_capture(client: Te
     forgotten = client.delete(f"/api/memories/{replacement_id}", headers=auth)
     assert forgotten.status_code == 200
     assert forgotten.json()["state"] == "dismissed"
-    assert client.get("/api/memories", headers=auth).json() == {"memories": []}
+    assert client.get("/api/memories", headers=auth).json() == {"memories": [], "next_offset": None}
     session = app.state.test_session_factory()
     try:
         assert session.get(Capture, UUID(capture_id)) is not None
@@ -281,12 +287,7 @@ def test_memory_retriever_follows_context_order_for_unmatched_memories(
         )
         session.commit()
         memories = MemoryRetriever().retrieve(session, user.id, query="terme absent", limit=4)
-        assert [memory.memory_type for memory in memories] == [
-            MemoryType.CONSTRAINT,
-            MemoryType.FACT,
-            MemoryType.PREFERENCE,
-            MemoryType.INTEREST,
-        ]
+        assert memories == []
     finally:
         session.close()
 
@@ -312,7 +313,9 @@ def test_explicit_preference_replaces_previous_preference_with_provenance(
         session.add(previous)
         session.commit()
 
-        replaced = supersede_conflicting_preference(session, user.id, "Je préfère le café")
+        replaced = supersede_conflicting_preference(
+            session, user.id, "Je préfère maintenant le café"
+        )
         assert replaced is not None
         assert replaced.id == previous.id
         assert replaced.state is MemoryState.STALE
@@ -351,7 +354,9 @@ def test_preference_contradictions_are_grouped_without_cross_topic_replacement(
         session.add_all([beverage, schedule])
         session.commit()
 
-        replaced = supersede_conflicting_preference(session, user.id, "Je préfère le café")
+        replaced = supersede_conflicting_preference(
+            session, user.id, "Je préfère maintenant le café"
+        )
         assert replaced is not None
         assert replaced.id == beverage.id
         assert schedule.state is MemoryState.ACTIVE

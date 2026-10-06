@@ -139,6 +139,10 @@ def _personal_projects(
 def _accessible_memories(
     session: Session, user_id: UUID, args: dict[str, object]
 ) -> list[dict[str, object]]:
+    from app.modules.memory.policy import memory_allowed
+
+    if not memory_allowed(session, user_id):
+        return []
     memories = MemoryRepository().active_for_user(session, user_id, limit=_limit(args))
     return [
         {

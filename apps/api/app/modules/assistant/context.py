@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.modules.assistant.models import AssistantMessage, AssistantMessageRole, AssistantThread
 from app.modules.assistant.tools import ToolBudget, tool_registry
 from app.modules.memory.context import ContextBuilder
+from app.modules.memory.working import current_projects, visible_message_predicate, working_context
 from app.modules.personal.models import PersonalTask
 
 _context_builder = ContextBuilder()
@@ -21,9 +22,7 @@ _context_builder = ContextBuilder()
 
 def get_or_create_thread(session: Session, user_id: UUID) -> AssistantThread:
     """Return only the assistant thread owned by ``user_id``."""
-    thread = session.scalar(
-        select(AssistantThread).where(AssistantThread.user_id == user_id)
-    )
+    thread = session.scalar(select(AssistantThread).where(AssistantThread.user_id == user_id))
     if thread is None:
         thread = AssistantThread(user_id=user_id)
         session.add(thread)
@@ -32,33 +31,50 @@ def get_or_create_thread(session: Session, user_id: UUID) -> AssistantThread:
 
 
 def recent_messages(
-    session: Session, thread_id: UUID, *, limit: int, exclude_message_id: UUID | None = None
+    session: Session,
+    thread_id: UUID,
+    *,
+    limit: int,
+    exclude_message_id: UUID | None = None,
+    include_sources: bool = False,
 ) -> list[dict[str, str]]:
     """Load a bounded conversation slice from one already-authorized thread."""
     query = select(AssistantMessage).where(AssistantMessage.thread_id == thread_id)
+    owner = session.scalar(select(AssistantThread.user_id).where(AssistantThread.id == thread_id))
+    if owner is None:
+        return []
+    query = query.where(visible_message_predicate(owner))
     if exclude_message_id is not None:
         query = query.where(AssistantMessage.id != exclude_message_id)
     messages = list(
-        session.scalars(
-            query.order_by(AssistantMessage.created_at.desc()).limit(limit)
-        )
+        session.scalars(query.order_by(AssistantMessage.created_at.desc()).limit(limit))
     )
     return [
-        {"role": message.role.value, "content": message.content}
+        {
+            "role": message.role.value,
+            "content": message.content,
+            **({"source_message_id": str(message.id)} if include_sources else {}),
+        }
         for message in reversed(messages)
     ]
 
 
 def accessible_memory_summaries(
     session: Session, user_id: UUID, *, limit: int, query: str | None = None
-) -> list[str]:
+) -> list[dict[str, object]]:
     """Return active personal memories; no family or hidden conversation data is queried."""
-    return _context_builder.memory_summaries(
+    # An unqualified recall request can refer to the last conversation rather than keywords.
+    from app.modules.memory.text import terms
+
+    search = query
+    if query and terms(query) and terms(query) <= {"souviens", "souvenir", "souvenirs", "souvient"}:
+        search = None
+    return _context_builder.memory_context(
         session,
         user_id,
-        query=query,
+        query=search,
         limit=limit,
-        max_characters=max(240, limit * 240),
+        project_ids=current_projects(session, user_id, query or ""),
     )
 
 
@@ -75,7 +91,7 @@ def open_task_titles(session: Session, user_id: UUID, *, limit: int) -> list[str
 
 
 def accessible_personal_context(
-    session: Session, user_id: UUID, *, limit: int = 8
+    session: Session, user_id: UUID, *, limit: int = 8, query: str = ""
 ) -> list[dict[str, object]]:
     """Expose only bounded read-only personal objects to the chat provider."""
     settings = get_settings()
@@ -83,7 +99,7 @@ def accessible_personal_context(
         max_calls=settings.assistant_max_tool_calls,
         max_duration_ms=settings.assistant_tool_budget_ms,
     )
-    return [
+    result = [
         {
             "source": "personal.tasks.list",
             "items": tool_registry.execute(
@@ -115,6 +131,10 @@ def accessible_personal_context(
             ),
         },
     ]
+    working = working_context(session, user_id, query)
+    if working is not None:
+        result.append(working)
+    return result
 
 
 def assistant_message_role(value: AssistantMessageRole) -> str:

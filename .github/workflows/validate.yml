@@ -15,10 +15,11 @@ jobs:
     env:
       APP_ENV: test
       DATABASE_URL: postgresql+psycopg://cocoon_ci:ci-only-password@localhost:5432/cocoon_ci
+      MEMORY_TEST_DATABASE_URL: postgresql+psycopg://cocoon_ci:ci-only-password@localhost:5432/cocoon_ci
       JWT_SECRET: ci-only-jwt-secret-with-at-least-32-characters
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_DB: cocoon_ci
           POSTGRES_USER: cocoon_ci
