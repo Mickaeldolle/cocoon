@@ -34,10 +34,10 @@
       "favicon": "./public/icons/favicon.png"
     },
     "ios": {
-      "bundleIdentifier": "com.example.cocoon"
+      "bundleIdentifier": "com.mickaelddev51.cocoon"
     },
     "android": {
-      "package": "com.example.cocoon",
+      "package": "com.mickaelddev51.cocoon",
       "adaptiveIcon": {
         "foregroundImage": "./public/icons/android-adaptive-foreground.png",
         "backgroundColor": "#181A1F"
