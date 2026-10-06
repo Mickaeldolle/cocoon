@@ -25,6 +25,8 @@ import {
 import { useSessionStore } from '@/src/stores/session-store';
 import { useThemeStore } from '@/src/stores/theme-store';
 import { darkTheme, lightTheme, subtleBackground, type ColorTokens } from '@/src/theme';
+import { AssistantOrb } from '@/features/assistant/assistant-orb';
+import { homeReplyKey, type HomeReply } from '@/features/assistant/home-reply';
 import { VoiceCapture } from '@/features/assistant/voice-capture';
 
 const assistantMarkdown = MarkdownIt({ typographer: true }).disable(['image']);
@@ -79,18 +81,41 @@ export default function AssistantScreen() {
   const input = useRef<TextInput>(null);
   const initialSubmitted = useRef(false);
   const streamAbort = useRef<AbortController | null>(null);
-  const params = useLocalSearchParams<{ initial?: string }>();
+  const params = useLocalSearchParams<{ initial?: string; completed?: string }>();
+  const completed =
+    typeof params.completed === 'string'
+      ? client.getQueryData<HomeReply>(homeReplyKey(userId, params.completed))
+      : undefined;
   const [text, setText] = useState(() =>
     typeof params.initial === 'string' ? params.initial : '',
   );
   const [streamingText, setStreamingText] = useState('');
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string | null>(completed?.model ?? null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [localTurns, setLocalTurns] = useState<LocalTurn[]>([]);
-  const [choices, setChoices] = useState<string[]>([]);
-  const [memoryProposals, setMemoryProposals] = useState<AssistantProposal[]>([]);
+  const [localTurns, setLocalTurns] = useState<LocalTurn[]>(() =>
+    completed
+      ? [
+          {
+            key: completed.key,
+            text: completed.text,
+            delivery: 'sent',
+            reply: completed.result.message,
+            model: completed.model,
+          },
+        ]
+      : [],
+  );
+  const [choices, setChoices] = useState<string[]>(completed?.result.choices ?? []);
+  const [memoryProposals, setMemoryProposals] = useState<AssistantProposal[]>(
+    () => completed?.result.message.proposals.filter((proposal) => proposal.kind === 'note') ?? [],
+  );
   const [notice, setNotice] = useState<string | null>(null);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    if (typeof params.completed === 'string') {
+      client.removeQueries({ queryKey: homeReplyKey(userId, params.completed), exact: true });
+    }
+  }, [client, params.completed, userId]);
   useFocusEffect(
     useCallback(() => {
       void refreshUser().catch(() => undefined);
@@ -336,6 +361,7 @@ export default function AssistantScreen() {
           >
             <Text style={styles.backIcon}>arrow_back</Text>
           </Pressable>
+          <AssistantOrb size={52} active={send.isPending} enabled={assistantEnabled} />
           <Text numberOfLines={1} style={styles.title}>
             Votre assistant
           </Text>

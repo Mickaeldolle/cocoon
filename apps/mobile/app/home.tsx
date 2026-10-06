@@ -1,17 +1,19 @@
 import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { Redirect, router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
+  Keyboard,
+  KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { authApi, neuralApi, secretApi } from '@/src/services/api';
 import {
   homePushAction,
@@ -21,18 +23,16 @@ import {
 import {
   clearPendingCapture,
   loadPendingCapture,
-  savePendingCapture,
   updatePendingCaptureRunId,
-  type PendingCapture,
 } from '@/src/services/pending-capture';
+import { AssistantOrb } from '@/features/assistant/assistant-orb';
+import { homeReplyKey, requestHomeReply } from '@/features/assistant/home-reply';
 import { VoiceCapture } from '@/features/assistant/voice-capture';
 import { useSecretGesture } from '@/src/hooks/use-secret-gesture';
 import { useSecretAccessStore } from '@/src/stores/secret-access-store';
 import { useSessionStore } from '@/src/stores/session-store';
 import { useThemeStore } from '@/src/stores/theme-store';
 import { darkTheme, lightTheme, subtleBackground, type ColorTokens } from '@/src/theme';
-
-const labels = { now: 'Maintenant', review: 'À vérifier', confirm: 'À confirmer' } as const;
 
 export default function HomeScreen() {
   const initialized = useSessionStore((state) => state.initialized);
@@ -54,6 +54,38 @@ export default function HomeScreen() {
   const colors = (mode === 'dark' ? darkTheme : lightTheme).colors;
   const styles = makeStyles(colors);
   const [text, setText] = useState('');
+  const [opening, setOpening] = useState(false);
+  const streamAbort = useRef<AbortController | null>(null);
+  const previousTurn = useRef<{ owner: string; key: string; text: string } | null>(null);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
+  useFocusEffect(
+    useCallback(() => {
+      setOpening(false);
+      if (!assistantEnabled || previousTurn.current?.owner !== user?.id) {
+        previousTurn.current = null;
+      }
+      return () => {
+        streamAbort.current?.abort();
+        streamAbort.current = null;
+      };
+    }, [user?.id, assistantEnabled]),
+  );
+  useEffect(() => {
+    const show = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      () => setKeyboardVisible(true),
+    );
+    const hide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardVisible(false),
+    );
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
   useFocusEffect(
     useCallback(() => {
       void refreshUser().catch(() => undefined);
@@ -63,6 +95,7 @@ export default function HomeScreen() {
   const [pushAction, setPushAction] = useState<'offer' | 'blocked' | 'retry' | null>(null);
   const [pushError, setPushError] = useState<string | null>(null);
   const [pushBusy, setPushBusy] = useState(false);
+  const orbSize = Math.max(100, Math.min(width - 48, height - 340 - (pushAction ? 150 : 0), 380));
   const checkPush = useCallback(
     async (isCancelled: () => boolean = () => false) => {
       if (!token || !user?.id) return;
@@ -126,86 +159,6 @@ export default function HomeScreen() {
   };
   const input = useRef<TextInput>(null);
   const recoveryKey = useRef<string | null>(null);
-  const requestController = useRef<AbortController | null>(null);
-  const activeRunIdRef = useRef<string | null>(null);
-  const capture = useMutation({
-    mutationFn: async (value: string) => {
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Paris';
-      const idempotencyKey = `mobile-home-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      if (!user?.id) throw new Error('La session utilisateur n’est pas prête.');
-      const pending: PendingCapture = {
-        ownerId: user.id,
-        text: value,
-        timezone,
-        idempotencyKey,
-        runId: null,
-        createdAt: new Date().toISOString(),
-      };
-      await savePendingCapture(pending);
-      const controller = new AbortController();
-      requestController.current = controller;
-      try {
-        return await neuralApi.streamCapture(
-          token!,
-          value,
-          timezone,
-          {
-            onRunId: (runId) => {
-              activeRunIdRef.current = runId;
-              void updatePendingCaptureRunId(user.id, idempotencyKey, runId);
-            },
-            onProgress: ({ text: progressText }) => setNotice(progressText),
-          },
-          controller.signal,
-          { idempotencyKey },
-        );
-      } catch (error) {
-        if (controller.signal.aborted) throw new Error('Capture annulée.');
-        const status =
-          typeof error === 'object' &&
-          error &&
-          'status' in error &&
-          typeof error.status === 'number'
-            ? error.status
-            : null;
-        if (status !== null && status >= 400 && status < 500) throw error;
-        const queued = await neuralApi.queueCapture(token!, value, timezone, idempotencyKey);
-        return queued;
-      }
-    },
-    onSuccess: (result) => {
-      setText('');
-      if (user?.id) void clearPendingCapture(user.id);
-      if ('summary' in result) {
-        setNotice(result.clarification ?? result.summary);
-      } else {
-        setNotice('Capture mise en file. Elle reprendra automatiquement dès que possible.');
-      }
-      void client.invalidateQueries({ queryKey: ['neural-home', user?.id] });
-    },
-    onError: (error) =>
-      setNotice(error instanceof Error ? error.message : 'La capture ne peut pas être traitée.'),
-    onSettled: () => {
-      requestController.current = null;
-      activeRunIdRef.current = null;
-    },
-  });
-  const cancelCapture = async () => {
-    const runId = activeRunIdRef.current;
-    requestController.current?.abort();
-    if (!runId || !token || !user?.id) {
-      setNotice('La demande est arrêtée localement ; la capture reste conservée.');
-      return;
-    }
-    try {
-      await neuralApi.cancelRun(token, runId);
-      await clearPendingCapture(user.id);
-      setText('');
-      setNotice('Capture annulée. Le texte brut reste conservé côté serveur.');
-    } catch {
-      setNotice('Le serveur n’a pas confirmé l’annulation. La capture reste conservée.');
-    }
-  };
   useEffect(() => {
     if (!token || !user?.id || recoveryKey.current === user.id) return;
     recoveryKey.current = user.id;
@@ -252,7 +205,7 @@ export default function HomeScreen() {
           setNotice('La capture interrompue a été traitée.');
           void client.invalidateQueries({ queryKey: ['neural-home', user.id] });
         } else if (run.status === 'failed' || run.status === 'cancelled') {
-          setNotice('La capture conservée doit être relancée depuis le champ ci-dessus.');
+          setNotice('La capture conservée doit être relancée depuis le champ de message.');
         } else {
           setNotice(
             'Capture conservée et toujours en cours. Son état sera vérifié au prochain passage.',
@@ -267,38 +220,79 @@ export default function HomeScreen() {
       cancelled = true;
     };
   }, [client, token, user?.id]);
-  const home = useQuery({
-    queryKey: ['neural-home', user?.id],
-    enabled: Boolean(token && user?.id),
-    queryFn: () => neuralApi.home(token!),
-    retry: false,
-  });
-  const confirm = useMutation({
-    mutationFn: ({ id, version }: { id: string; version: number | null }) =>
-      neuralApi.confirm(token!, id, version ?? undefined),
-    onSuccess: () => {
-      setNotice('Proposition confirmée.');
-      void client.invalidateQueries({ queryKey: ['neural-home', user?.id] });
-    },
-    onError: () => setNotice('Cette proposition ne peut pas être confirmée pour le moment.'),
-  });
-  const cancelProposal = useMutation({
-    mutationFn: (proposalId: string) => neuralApi.cancel(token!, proposalId),
-    onSuccess: () => {
-      setNotice('Proposition écartée.');
-      void client.invalidateQueries({ queryKey: ['neural-home', user?.id] });
-    },
-    onError: () => setNotice('Cette proposition ne peut pas être écartée pour le moment.'),
-  });
+  const cancelStreaming = () => {
+    streamAbort.current?.abort();
+    streamAbort.current = null;
+    setOpening(false);
+    setNotice('Génération arrêtée. Votre message est conservé.');
+  };
+  const openAssistant = async () => {
+    if (!assistantEnabled || !token || !user?.id || streamAbort.current) return;
+    const value = text.trim();
+    if (!value) {
+      setNotice('Écrivez un message avant de l’envoyer.');
+      input.current?.focus();
+      return;
+    }
+    const controller = new AbortController();
+    streamAbort.current = controller;
+    const owner = user.id;
+    const previous = previousTurn.current;
+    const retry = previous?.owner === owner && previous.text === value;
+    const key = retry
+      ? previous.key
+      : `mobile-chat-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    previousTurn.current = { owner, key, text: value };
+    setOpening(true);
+    setNotice(null);
+    Keyboard.dismiss();
+    try {
+      const reply = await requestHomeReply(
+        client,
+        token,
+        owner,
+        { key, text: value, retry },
+        controller.signal,
+      );
+      const session = useSessionStore.getState();
+      if (
+        streamAbort.current !== controller ||
+        controller.signal.aborted ||
+        session.user?.id !== owner ||
+        !session.user.enable_assistant
+      )
+        return;
+      // Only the opaque key goes into the URL. The completed turn is handed off in memory.
+      const cacheKey = homeReplyKey(owner, key);
+      client.setQueryDefaults(['assistant', 'home-reply'], { gcTime: 60_000 });
+      client.setQueryData(cacheKey, reply);
+      void client.invalidateQueries({ queryKey: ['assistant', 'history', owner] });
+      previousTurn.current = null;
+      setText('');
+      router.push({ pathname: '/assistant', params: { completed: key } });
+    } catch (error) {
+      if (streamAbort.current !== controller) return;
+      setNotice(error instanceof Error ? error.message : 'Le modèle est indisponible. Réessayez.');
+    } finally {
+      if (streamAbort.current === controller) {
+        streamAbort.current = null;
+        setOpening(false);
+      }
+    }
+  };
   if (initialized && (!token || !user)) return <Redirect href="/sign-in" />;
   return (
-    <SafeAreaView style={styles.screen}>
-      <View style={styles.gestureArea} {...secretGestureHandlers}>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <SafeAreaView edges={['top']} style={styles.screen}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        enabled={Platform.OS !== 'web'}
+        keyboardVerticalOffset={0}
+        style={styles.flex}
+      >
+        <View style={styles.gestureArea} {...secretGestureHandlers}>
           <View style={styles.top}>
             <View style={styles.heading}>
               <Text style={styles.kicker}>COCOON</Text>
-              <Text style={styles.title}>Votre assistant personnel</Text>
             </View>
             <View style={styles.topActions}>
               <Pressable
@@ -321,177 +315,121 @@ export default function HomeScreen() {
               </Pressable>
             </View>
           </View>
-          <Text style={styles.intro}>
-            Déposez ce qui compte. Cocoon garde le contexte et vous aide au bon moment.
-          </Text>
-          {pushAction ? (
-            <View style={styles.pushCard}>
-              <Text style={styles.pushTitle}>Notifications</Text>
-              <Text style={styles.pushText}>
-                {pushAction === 'blocked'
-                  ? `Autorisez les notifications dans les réglages du ${Platform.OS === 'web' ? 'navigateur' : 'téléphone'}.`
-                  : pushAction === 'retry'
-                    ? 'Impossible de vérifier votre inscription aux notifications.'
-                    : 'Recevez vos rappels et nouveaux messages sur cet appareil.'}
-              </Text>
-              {pushError ? (
-                <Text accessibilityRole="alert" style={styles.pushError}>
-                  {pushError}
-                </Text>
-              ) : null}
-              {pushAction !== 'blocked' ? (
-                <Pressable
-                  auditAction="home.notifications.enable"
-                  accessibilityRole="button"
-                  disabled={pushBusy}
-                  onPress={pushAction === 'retry' ? () => void checkPush() : enablePush}
-                  style={[styles.pushButton, pushBusy && styles.disabled]}
-                >
-                  <Text style={styles.pushButtonText}>
-                    {pushBusy
-                      ? 'Activation…'
-                      : pushAction === 'retry'
-                        ? 'Réessayer'
-                        : 'Activer les notifications'}
-                  </Text>
-                </Pressable>
-              ) : null}
-            </View>
-          ) : null}
-          <View style={styles.capture}>
-            <TextInput
-              ref={input}
-              accessibilityLabel="Déposer une pensée"
-              editable={assistantEnabled}
-              multiline
-              value={text}
-              onChangeText={(value) => {
-                setText(value);
-                setNotice(null);
-              }}
-              placeholder="Ex. rappel moi mon rendez vous mardi à 10h"
-              placeholderTextColor={colors.muted}
-              style={styles.input}
-              textAlignVertical="center"
-            />
-            <VoiceCapture
-              accessToken={token}
-              colors={colors}
-              disabled={!token || !user?.id || !assistantEnabled}
-              sending={capture.isPending}
-              hasText={!!text.trim()}
-              onSend={() => {
-                const value = text.trim();
-                if (!value) {
-                  setNotice('Écrivez un message avant de l’envoyer.');
-                  return;
-                }
-                router.push({ pathname: '/assistant', params: { initial: value } });
-              }}
-              onError={setNotice}
-            />
-          </View>
-          {!assistantEnabled ? (
-            <Text accessibilityRole="alert" style={styles.accessNotice}>
-              Vous n&apos;avez pas accès à cette fonctionnalité
-            </Text>
-          ) : null}
-          <Pressable
-            auditAction="home.assistant.open"
-            accessibilityRole="button"
-            accessibilityLabel="Ouvrir la conversation avec votre assistant"
-            onPress={() => router.push('/assistant')}
-            style={styles.conversationLink}
+          <ScrollView
+            style={styles.flex}
+            contentContainerStyle={styles.content}
+            keyboardDismissMode="interactive"
+            keyboardShouldPersistTaps="handled"
           >
-            <Text style={styles.conversationLinkIcon}>chat_bubble_outline</Text>
-            <Text style={styles.conversationLinkText}>Voir la conversation</Text>
-            <Text style={styles.conversationLinkIcon}>arrow_forward</Text>
-          </Pressable>
-          {capture.isPending ? (
-            <Pressable
-              auditAction="home.capture.cancel"
-              accessibilityRole="button"
-              accessibilityLabel="Annuler la capture"
-              onPress={() => void cancelCapture()}
-              style={styles.cancel}
-            >
-              <Text style={styles.cancelText}>Annuler la capture</Text>
-            </Pressable>
-          ) : null}
-          {notice ? (
-            <Text accessibilityRole="alert" style={styles.notice}>
-              {notice}
-            </Text>
-          ) : null}
-          <Text style={styles.section}>Ce qui mérite votre attention</Text>
-          {home.isPending && !home.isError ? (
-            <ActivityIndicator color={colors.spruce} style={styles.loader} />
-          ) : null}
-          {home.isError ? (
-            <View style={styles.empty}>
-              <Text accessibilityRole="alert" style={styles.emptyTitle}>
-                Impossible de charger vos informations.
+            {pushAction ? (
+              <View style={styles.pushCard}>
+                <Text style={styles.pushTitle}>Notifications</Text>
+                <Text style={styles.pushText}>
+                  {pushAction === 'blocked'
+                    ? `Autorisez les notifications dans les réglages du ${Platform.OS === 'web' ? 'navigateur' : 'téléphone'}.`
+                    : pushAction === 'retry'
+                      ? 'Impossible de vérifier votre inscription aux notifications.'
+                      : 'Recevez vos rappels et nouveaux messages sur cet appareil.'}
+                </Text>
+                {pushError ? (
+                  <Text accessibilityRole="alert" style={styles.pushError}>
+                    {pushError}
+                  </Text>
+                ) : null}
+                {pushAction !== 'blocked' ? (
+                  <Pressable
+                    auditAction="home.notifications.enable"
+                    accessibilityRole="button"
+                    disabled={pushBusy}
+                    onPress={pushAction === 'retry' ? () => void checkPush() : enablePush}
+                    style={[styles.pushButton, pushBusy && styles.disabled]}
+                  >
+                    <Text style={styles.pushButtonText}>
+                      {pushBusy
+                        ? 'Activation…'
+                        : pushAction === 'retry'
+                          ? 'Réessayer'
+                          : 'Activer les notifications'}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
+            <View style={styles.presence}>
+              <AssistantOrb size={orbSize} active={opening} enabled={assistantEnabled} />
+              <Text style={styles.presenceTitle}>Votre assistant personnel</Text>
+              <Text accessibilityLiveRegion="polite" style={styles.presenceStatus}>
+                {opening
+                  ? 'Votre assistant prépare sa réponse…'
+                  : assistantEnabled
+                    ? 'Que souhaitez-vous partager ?'
+                    : 'Assistant indisponible'}
               </Text>
-              <Text style={styles.emptyText}>Vérifiez la connexion puis réessayez.</Text>
               <Pressable
-                auditAction="home.retry"
+                auditAction="home.assistant.open"
                 accessibilityRole="button"
-                accessibilityLabel="Réessayer le chargement de l’accueil"
-                onPress={() => void home.refetch()}
-                style={styles.dismiss}
+                accessibilityLabel="Ouvrir la conversation avec votre assistant"
+                accessibilityState={{ disabled: opening }}
+                disabled={opening}
+                onPress={() => router.push('/assistant')}
+                style={({ pressed }) => [styles.conversationLink, pressed && styles.pressed]}
               >
-                <Text style={styles.dismissText}>Réessayer</Text>
+                <Text style={styles.conversationLinkIcon}>chat_bubble_outline</Text>
+                <Text style={styles.conversationLinkText}>Voir la conversation</Text>
+                <Text style={styles.conversationLinkIcon}>arrow_forward</Text>
               </Pressable>
             </View>
-          ) : null}
-          {!home.isPending && home.data?.signals.length === 0 ? (
-            <View style={styles.empty}>
-              <Text style={styles.emptyTitle}>Rien à régler maintenant.</Text>
-              <Text style={styles.emptyText}>
-                Vos prochaines captures feront apparaître ici seulement ce qui devient utile.
+          </ScrollView>
+          <View
+            style={[
+              styles.composer,
+              { paddingBottom: keyboardVisible ? 12 : Math.max(insets.bottom, 24) },
+            ]}
+          >
+            {notice ? (
+              <Text accessibilityRole="alert" style={styles.notice}>
+                {notice}
               </Text>
+            ) : null}
+            <View style={styles.capture}>
+              <TextInput
+                ref={input}
+                accessibilityLabel="Votre message"
+                editable={assistantEnabled && !opening}
+                multiline={false}
+                blurOnSubmit={false}
+                returnKeyType="send"
+                onSubmitEditing={openAssistant}
+                value={text}
+                onChangeText={(value) => {
+                  setText(value);
+                  setNotice(null);
+                }}
+                placeholder="Écrire un message"
+                placeholderTextColor={colors.muted}
+                style={styles.input}
+                textAlignVertical="center"
+              />
+              <VoiceCapture
+                accessToken={token}
+                colors={colors}
+                variant="chat"
+                disabled={!token || !user?.id || !assistantEnabled}
+                sending={opening}
+                hasText={!!text.trim()}
+                onSend={openAssistant}
+                onCancelSend={cancelStreaming}
+                onError={setNotice}
+              />
             </View>
-          ) : null}
-          {home.data?.signals.map((signal) => (
-            <View key={signal.id} style={styles.signal}>
-              <Text style={styles.label}>{labels[signal.kind]}</Text>
-              <Text style={styles.signalTitle}>{signal.title}</Text>
-              <Text style={styles.reason}>{signal.reason}</Text>
-              <Text style={styles.source}>{signal.source}</Text>
-              {signal.proposal_id ? (
-                <View style={styles.proposalActions}>
-                  <Pressable
-                    auditAction="home.proposal.confirm"
-                    accessibilityRole="button"
-                    disabled={confirm.isPending || cancelProposal.isPending}
-                    onPress={() =>
-                      confirm.mutate({ id: signal.proposal_id!, version: signal.payload_version })
-                    }
-                    style={[
-                      styles.confirm,
-                      (confirm.isPending || cancelProposal.isPending) && styles.disabled,
-                    ]}
-                  >
-                    <Text style={styles.confirmText}>Confirmer</Text>
-                  </Pressable>
-                  <Pressable
-                    auditAction="home.proposal.dismiss"
-                    accessibilityRole="button"
-                    disabled={confirm.isPending || cancelProposal.isPending}
-                    onPress={() => cancelProposal.mutate(signal.proposal_id!)}
-                    style={[
-                      styles.dismiss,
-                      (confirm.isPending || cancelProposal.isPending) && styles.disabled,
-                    ]}
-                  >
-                    <Text style={styles.dismissText}>Écarter</Text>
-                  </Pressable>
-                </View>
-              ) : null}
-            </View>
-          ))}
-        </ScrollView>
-      </View>
+            {!assistantEnabled ? (
+              <Text accessibilityRole="alert" style={styles.accessNotice}>
+                Vous n&apos;avez pas accès à cette fonctionnalité
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -499,27 +437,21 @@ export default function HomeScreen() {
 function makeStyles(colors: ColorTokens) {
   return StyleSheet.create({
     screen: { flex: 1, ...subtleBackground(colors) },
-    gestureArea: { flex: 1 },
-    content: { padding: 24, paddingBottom: 44 },
+    flex: { flex: 1, minHeight: 0 },
+    gestureArea: { flex: 1, minHeight: 0 },
+    content: { flexGrow: 1, paddingHorizontal: 24, paddingBottom: 16 },
     top: {
       flexDirection: 'row',
       justifyContent: 'space-between',
-      alignItems: 'flex-start',
+      alignItems: 'center',
       gap: 12,
+      paddingHorizontal: 24,
+      paddingTop: 16,
+      paddingBottom: 8,
     },
     heading: { flex: 1, minWidth: 0 },
     topActions: { flexDirection: 'row', gap: 8, flexShrink: 0 },
-    kicker: { color: colors.clay, fontSize: 12, fontWeight: '800', letterSpacing: 2 },
-    title: {
-      color: colors.ink,
-      fontSize: 30,
-      fontWeight: '700',
-      letterSpacing: -0.7,
-      marginTop: 8,
-      marginBottom: 16,
-    },
-    intro: { color: colors.muted, fontSize: 16, lineHeight: 23, marginTop: 12 },
-    accessNotice: { color: colors.muted, fontSize: 13, lineHeight: 19, marginTop: 8 },
+    kicker: { color: colors.ink, fontSize: 16, fontWeight: '800', letterSpacing: 3 },
     profile: {
       alignItems: 'center',
       borderColor: colors.border,
@@ -530,12 +462,43 @@ function makeStyles(colors: ColorTokens) {
       width: 44,
     },
     profileText: { color: colors.ink, fontSize: 20 },
-    capture: {
-      alignItems: 'flex-end',
-      flexDirection: 'row',
-      gap: 8,
-      marginTop: 24,
+    presence: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 16 },
+    presenceTitle: {
+      color: colors.ink,
+      fontSize: 24,
+      fontWeight: '600',
+      letterSpacing: -0.5,
+      textAlign: 'center',
     },
+    presenceStatus: {
+      color: colors.muted,
+      fontSize: 14,
+      lineHeight: 22,
+      marginTop: 8,
+      textAlign: 'center',
+    },
+    conversationLink: {
+      alignItems: 'center',
+      flexDirection: 'row',
+      gap: 7,
+      minHeight: 44,
+      marginTop: 18,
+      paddingHorizontal: 8,
+    },
+    conversationLinkIcon: {
+      color: colors.clay,
+      fontFamily: 'MaterialSymbols_400Regular',
+      fontSize: 18,
+    },
+    conversationLinkText: { color: colors.clay, fontSize: 13, fontWeight: '600' },
+    composer: {
+      paddingHorizontal: 24,
+      paddingTop: 12,
+      width: '100%',
+      maxWidth: 760,
+      alignSelf: 'center',
+    },
+    capture: { alignItems: 'flex-end', flexDirection: 'row', gap: 8 },
     input: {
       backgroundColor: colors.white,
       borderColor: colors.border,
@@ -543,27 +506,17 @@ function makeStyles(colors: ColorTokens) {
       borderWidth: 1,
       color: colors.ink,
       flex: 1,
+      minWidth: 0,
       fontSize: 15,
-      maxHeight: 110,
-      minHeight: 48,
-      paddingHorizontal: 15,
-      paddingVertical: 8,
-      boxShadow: '0 2px 5px rgba(0, 0, 0, 0.12)',
-    },
-    conversationLink: {
-      alignItems: 'center',
-      alignSelf: 'flex-start',
-      flexDirection: 'row',
-      gap: 7,
       minHeight: 44,
-      marginTop: 8,
+      paddingHorizontal: 15,
+      paddingVertical: 10,
+      boxShadow: '0 2px 5px rgba(0, 0, 0, 0.08)',
     },
-    conversationLinkIcon: {
-      color: colors.spruce,
-      fontFamily: 'MaterialSymbols_400Regular',
-      fontSize: 20,
-    },
-    conversationLinkText: { color: colors.spruce, fontSize: 14, fontWeight: '700' },
+    accessNotice: { color: colors.muted, fontSize: 13, lineHeight: 19, marginTop: 8 },
+    notice: { color: colors.clay, lineHeight: 20, marginBottom: 9 },
+    pressed: { opacity: 0.7 },
+    disabled: { opacity: 0.55 },
     pushCard: {
       backgroundColor: colors.white,
       borderColor: colors.border,
@@ -571,6 +524,9 @@ function makeStyles(colors: ColorTokens) {
       borderWidth: 1,
       marginTop: 16,
       padding: 14,
+      maxWidth: 712,
+      width: '100%',
+      alignSelf: 'center',
     },
     pushTitle: { color: colors.ink, fontSize: 14, fontWeight: '800' },
     pushText: { color: colors.muted, fontSize: 13, lineHeight: 18, marginTop: 4 },
@@ -582,55 +538,9 @@ function makeStyles(colors: ColorTokens) {
       borderRadius: 10,
       justifyContent: 'center',
       marginTop: 10,
-      minHeight: 40,
+      minHeight: 44,
       paddingHorizontal: 14,
     },
     pushButtonText: { color: colors.white, fontSize: 13, fontWeight: '800' },
-    disabled: { opacity: 0.55 },
-    cancel: { alignSelf: 'flex-start', marginTop: 8, paddingHorizontal: 4, paddingVertical: 5 },
-    cancelText: { color: colors.clay, fontWeight: '700' },
-    notice: { color: colors.clay, lineHeight: 20, marginTop: 9 },
-    section: { color: colors.ink, fontSize: 17, fontWeight: '800', marginTop: 30 },
-    loader: { marginVertical: 28 },
-    empty: {
-      borderColor: colors.border,
-      borderRadius: 16,
-      borderWidth: 1,
-      marginTop: 14,
-      padding: 18,
-    },
-    emptyTitle: { color: colors.ink, fontWeight: '800' },
-    emptyText: { color: colors.muted, lineHeight: 20, marginTop: 5 },
-    signal: {
-      backgroundColor: colors.white,
-      borderColor: colors.border,
-      borderRadius: 16,
-      borderWidth: 1,
-      marginTop: 12,
-      padding: 16,
-    },
-    label: { color: colors.clay, fontSize: 12, fontWeight: '800', letterSpacing: 0.6 },
-    signalTitle: { color: colors.ink, fontSize: 17, fontWeight: '800', marginTop: 5 },
-    reason: { color: colors.muted, lineHeight: 20, marginTop: 6 },
-    source: { color: colors.clay, fontSize: 12, marginTop: 10 },
-    confirm: {
-      alignItems: 'center',
-      backgroundColor: colors.spruce,
-      borderRadius: 12,
-      justifyContent: 'center',
-      marginTop: 14,
-      minHeight: 44,
-    },
-    confirmText: { color: colors.white, fontWeight: '800' },
-    proposalActions: { gap: 8, marginTop: 14 },
-    dismiss: {
-      alignItems: 'center',
-      borderColor: colors.border,
-      borderRadius: 12,
-      borderWidth: 1,
-      justifyContent: 'center',
-      minHeight: 44,
-    },
-    dismissText: { color: colors.muted, fontWeight: '800' },
   });
 }

@@ -58,6 +58,14 @@ export const lightTheme = {
 export type ColorTokens = { [Key in keyof typeof darkTheme.colors]: string };
 export type AppTheme = Omit<typeof darkTheme, 'colors'> & { colors: ColorTokens };
 
+// Shared visual identity of the assistant; UI text still uses the active theme.
+export const assistantVisual = {
+  violet: '#A78BFA',
+  ice: '#DDD6FE',
+  blue: '#818CF8',
+  glow: 'rgba(139, 92, 246, 0.16)',
+} as const;
+
 export function subtleBackground(colors: ColorTokens) {
   const gradient = `linear-gradient(155deg, ${colors.linen} 0%, ${colors.spruceSoft} 48%, ${colors.linen} 100%)`;
   return Platform.OS === 'web'
