@@ -82,6 +82,37 @@ test('API calls use one separator when the configured URL ends with a slash', as
   assert.deepEqual(urls, ['https://api.example.com/api/auth/register']);
 });
 
+test('Docker web calls the API on the page origin', async () => {
+  const urls = [];
+  const { authApi } = load(
+    'src/services/api.ts',
+    {
+      'expo-file-system': { File: class {} },
+      'expo-secure-store': {},
+      'expo/fetch': { fetch: async () => assert.fail('Unexpected streaming request') },
+      'react-native': { Platform: { OS: 'web' } },
+    },
+    {
+      window: { location: { origin: 'http://192.168.1.177:8080' } },
+      fetch: async (url) => {
+        urls.push(url);
+        return { ok: true, status: 200, json: async () => ({}) };
+      },
+      process: { env: { EXPO_PUBLIC_API_URL: 'same-origin' } },
+    },
+  );
+
+  await authApi.register({
+    installation_id: 'test-installation',
+    name: 'Browser',
+    platform: 'web',
+    email: 'test@example.com',
+    display_name: 'Test',
+    password: 'test-only-password',
+  });
+  assert.deepEqual(urls, ['http://192.168.1.177:8080/api/auth/register']);
+});
+
 test('expired access token is renewed and the request is retried once', async () => {
   const tokens = [];
   const api = load(

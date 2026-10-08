@@ -34,14 +34,15 @@ half4 main(float2 xy) {
     // Crossing curved filaments with bright junctions suggest a neural network.
     float a = abs(sin(lon * 4.0 + lat * 3.0 + 0.48 * sin(lat * 4.0 + t * 0.22)));
     float b = abs(sin(lon * 3.0 - lat * 5.0 + 0.35 * sin(lon * 5.0 - t * 0.18)));
-    float filament = exp(-min(a, b) * 25.0);
+    float filament = exp(-min(a, b) * (25.0 - energy * 6.0));
     float node = exp(-(a * a + b * b) * 1800.0);
-    // Soft electrical packets, never full-screen flashes.
-    float travel = fract(lat * 0.28 + lon * 0.12 - t * 0.11);
+    // The current follows the filaments; the active state broadens and brightens it.
+    float travel = fract(lat * 0.28 + lon * 0.12 - t * (0.11 + energy * 0.16));
     float packet = exp(-pow((travel - 0.5) * 24.0, 2.0));
-    float current = filament * (0.38 + packet * (1.5 + energy * 0.5));
-    col += float3(0.61, 0.51, 1.0) * current * depth * 1.4;
-    col += float3(0.85, 0.8, 1.0) * node * (0.35 + packet * 0.5);
+    float spark = pow(0.5 + 0.5 * sin(lon * 11.0 + lat * 7.0 - t * (1.1 + energy * 1.5)), 6.0);
+    float current = filament * (0.38 + energy * 0.35 + packet * (1.5 + energy * 1.6) + spark * energy * 0.65);
+    col += float3(0.61, 0.51, 1.0) * current * depth * (1.4 + energy * 0.85);
+    col += float3(0.85, 0.8, 1.0) * node * (0.35 + packet * (0.5 + energy * 0.6));
     alpha += current * 1.2 + node * 0.45;
     float2 centre = p - float2(0.08 * sin(t * 0.3), 0.06);
     float core = exp(-dot(centre, centre) * 16.0);

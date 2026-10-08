@@ -2,13 +2,11 @@ import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { AppState, StyleSheet, View } from 'react-native';
 import Animated, {
-  cancelAnimation,
   Easing,
   useAnimatedStyle,
+  useFrameCallback,
   useReducedMotion,
   useSharedValue,
-  withRepeat,
-  withSequence,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
@@ -17,13 +15,13 @@ import { assistantVisual } from '@/src/theme';
 
 export type OrbProps = { size?: number; active?: boolean; enabled?: boolean };
 
-const stars = Array.from({ length: 36 }, (_, index) => {
+const stars = Array.from({ length: 48 }, (_, index) => {
   const angle = index * 2.399963;
-  const radius = 0.32 + ((index * 17) % 19) / 115;
+  const radius = 0.37 + ((index * 17) % 19) / 165;
   return {
     x: 0.5 + Math.cos(angle) * radius,
     y: 0.5 + Math.sin(angle) * radius * 0.86,
-    size: index % 7 === 0 ? 3 : index % 3 === 0 ? 2 : 1.5,
+    size: index % 7 === 0 ? 3.3 : index % 3 === 0 ? 2.2 : 1.5,
     phase: angle,
     color: index % 3 === 0 ? assistantVisual.ice : assistantVisual.violet,
   };
@@ -40,14 +38,18 @@ function Star({
   pulse: SharedValue<number>;
   energy: SharedValue<number>;
 }) {
+  const drift = Math.min(1, size / 220);
   const motion = useAnimatedStyle(() => {
     const wave = Math.sin(pulse.value * Math.PI * 2 + star.phase);
     return {
-      opacity: 0.45 + (wave + 1) * 0.22,
+      opacity: 0.38 + (wave + 1) * (0.21 + energy.value * 0.09),
       transform: [
-        { translateX: wave * (2 + energy.value * 5) },
-        { translateY: Math.cos(pulse.value * Math.PI * 2 + star.phase) * (3 + energy.value * 7) },
-        { scale: 1 + energy.value * 0.25 },
+        { translateX: wave * (2 + energy.value * 10) * drift },
+        {
+          translateY:
+            Math.cos(pulse.value * Math.PI * 2 + star.phase) * (3 + energy.value * 12) * drift,
+        },
+        { scale: 1 + energy.value * 0.45 },
       ],
     };
   });
@@ -58,8 +60,8 @@ function Star({
         {
           left: star.x * size,
           top: star.y * size,
-          width: star.size,
-          height: star.size,
+          width: star.size * (size < 100 ? 0.55 : 1),
+          height: star.size * (size < 100 ? 0.55 : 1),
           backgroundColor: star.color,
           boxShadow: `0 0 7px ${star.color}`,
         },
@@ -82,6 +84,11 @@ export function OrbScene({
   const orbit = useSharedValue(0);
   const pulse = useSharedValue(0);
   const energy = useSharedValue(0);
+  const frame = useFrameCallback(({ timeSincePreviousFrame }) => {
+    const seconds = Math.min(timeSincePreviousFrame ?? 0, 48) / 1000;
+    orbit.value = (orbit.value + seconds * (6 + energy.value * 24)) % 360;
+    pulse.value = (pulse.value + seconds * (0.1 + energy.value * 0.24)) % 1;
+  }, false);
   useFocusEffect(
     useCallback(() => {
       setFocused(true);
@@ -96,34 +103,17 @@ export function OrbScene({
   }, []);
   useEffect(() => {
     const running = focused && foreground && enabled && !reducedMotion;
-    energy.value = withTiming(active && !reducedMotion ? 1 : 0, { duration: 350 });
-    if (running) {
-      // A full revolution repeats without a visual seam, even after a speed change.
-      orbit.value = withRepeat(
-        withTiming(orbit.value + 360, {
-          duration: active ? 12000 : 60000,
-          easing: Easing.linear,
-        }),
-        -1,
-      );
-      pulse.value = withRepeat(
-        withSequence(
-          withTiming(1, { duration: active ? 1400 : 5000, easing: Easing.inOut(Easing.sin) }),
-          withTiming(0, { duration: active ? 1400 : 5000, easing: Easing.inOut(Easing.sin) }),
-        ),
-        -1,
-      );
-    }
-    return () => {
-      cancelAnimation(orbit);
-      cancelAnimation(pulse);
-      cancelAnimation(energy);
-    };
-  }, [active, enabled, focused, foreground, reducedMotion, orbit, pulse, energy]);
+    energy.value = withTiming(running && active ? 1 : 0, {
+      duration: reducedMotion ? 0 : 450,
+      easing: Easing.inOut(Easing.sin),
+    });
+    frame.setActive(running);
+    return () => frame.setActive(false);
+  }, [active, enabled, focused, foreground, reducedMotion, energy, frame]);
   const sphere = useAnimatedStyle(() => ({
     transform: [
       { translateY: Math.sin(pulse.value * Math.PI * 2) * size * 0.018 },
-      { scale: 1 + pulse.value * 0.025 + energy.value * 0.04 },
+      { scale: 1 + Math.sin(pulse.value * Math.PI * 2) * 0.012 + energy.value * 0.055 },
       { rotate: `${Math.sin(pulse.value * Math.PI * 2) * (2 + energy.value * 4)}deg` },
     ],
   }));
@@ -133,7 +123,11 @@ export function OrbScene({
   const outerStars = useAnimatedStyle(() => ({
     transform: [{ rotate: `${-orbit.value * 0.7}deg` }, { scale: 1 + energy.value * 0.05 }],
   }));
-  const glow = useAnimatedStyle(() => ({ opacity: 0.45 + pulse.value * 0.2 + energy.value * 0.2 }));
+  const glow = useAnimatedStyle(() => ({
+    opacity: 0.48 + Math.sin(pulse.value * Math.PI * 2) * 0.08 + energy.value * 0.23,
+  }));
+  const visibleStars = size < 100 ? stars.slice(0, 20) : stars;
+  const innerStars = Math.ceil(visibleStars.length * 0.65);
   return (
     <View
       accessible={false}
@@ -150,13 +144,13 @@ export function OrbScene({
         ]}
       />
       <Animated.View style={[StyleSheet.absoluteFill, constellation]}>
-        {stars.slice(0, 24).map((star, index) => (
+        {visibleStars.slice(0, innerStars).map((star, index) => (
           <Star key={index} star={star} size={size} pulse={pulse} energy={energy} />
         ))}
       </Animated.View>
       <Animated.View style={[StyleSheet.absoluteFill, sphere]}>{core}</Animated.View>
       <Animated.View style={[StyleSheet.absoluteFill, outerStars]}>
-        {stars.slice(24).map((star, index) => (
+        {visibleStars.slice(innerStars).map((star, index) => (
           <Star key={index} star={star} size={size} pulse={pulse} energy={energy} />
         ))}
       </Animated.View>

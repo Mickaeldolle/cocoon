@@ -4,9 +4,13 @@ import { fetch as expoFetch } from 'expo/fetch';
 import { Platform } from 'react-native';
 
 const refreshTokenKey = 'cocoon.refresh-token';
-const apiUrl = process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, '');
+const configuredApiUrl = process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, '');
+const apiUrl =
+  configuredApiUrl === 'same-origin' && Platform.OS === 'web'
+    ? window.location.origin
+    : configuredApiUrl;
 
-if (!apiUrl) {
+if (!apiUrl || apiUrl === 'same-origin') {
   throw new Error('EXPO_PUBLIC_API_URL doit être défini pour appeler l’API Cocoon.');
 }
 

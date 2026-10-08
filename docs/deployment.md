@@ -24,8 +24,23 @@ fournisseur externe.
 
 ## Lancement
 
-```text
-docker compose -f docker/compose.yml --env-file .env up -d --build
+Depuis la racine du dépôt, vérifiez que `.env` contient un mot de passe PostgreSQL
+et un `JWT_SECRET` propres à cette installation. `DATABASE_URL` doit utiliser le
+service `postgres` et le même mot de passe. Réglez `EXPO_PUBLIC_API_URL` sur
+le client Expo natif si vous le compilez séparément. Le web construit par Docker
+appelle automatiquement Caddy sur la même origine que la page ; une ancienne
+valeur `EXPO_PUBLIC_API_URL` dans le `.env` racine n'est pas utilisée pour ce build.
+`CORS_ORIGINS` peut donc rester `[]` pour ce web Docker. Si vous servez le web
+séparément (par exemple avec Expo sur le port 8081), configurez son origine exacte
+dans `CORS_ORIGINS` et utilisez l'adresse publique de Caddy comme URL de l'API.
+En cas de base existante, faites une sauvegarde avant `up`, car le service
+`migrate` appliquera les nouvelles migrations.
+
+```powershell
+docker compose --env-file .env config --quiet
+docker compose --env-file .env up -d --build
+docker compose --env-file .env ps --all
+Invoke-WebRequest http://localhost:8080/health/ready
 ```
 
 Le service Compose `migrate` applique `alembic upgrade head` une seule fois ; l’API et les
@@ -33,34 +48,46 @@ workers attendent sa réussite avant de démarrer. La commande peut être relanc
 elle est idempotente. En local, Cocoon utilise par défaut les ports 8080/8443
 afin de ne pas entrer en conflit avec un autre reverse proxy. Sur le VPS, configurez
 `COCOON_HTTP_PORT=80` et `COCOON_HTTPS_PORT=443`.
+La réponse de `/health/ready` doit être HTTP 200. Si `migrate` échoue ou si
+`api` n'est pas sain, consultez les journaux avant de relancer :
+
+```powershell
+docker compose --env-file .env logs --tail=80 migrate api postgres
+```
+
+Ne lancez pas Alembic en parallèle.
+Le lancement publie uniquement Caddy, pas PostgreSQL ni l'API brute. Caddy
+répond 404 sur `/api/internal/*` et `/internal/*` ; les workers Docker tournent
+sur le réseau privé et les sondes de métriques doivent y accéder à l'API.
 
 ## Création du premier super-administrateur
 
 Après la migration, créez le compte depuis le conteneur API privé. Le mot de passe est demandé dans le terminal et n'est ni enregistré dans le dépôt, ni affiché :
 
 ```text
-docker compose -f docker/compose.yml --env-file .env exec -it api python -m app.commands.create_superadmin --email vous@example.com --display-name "Votre nom"
+docker compose --env-file .env exec -it api python -m app.commands.create_superadmin --email vous@example.com --display-name "Votre nom"
 ```
 
 Pour promouvoir un compte existant, seule l'adresse email est nécessaire :
 
 ```text
-docker compose -f docker/compose.yml --env-file .env exec api python -m app.commands.create_superadmin --email vous@example.com
+docker compose --env-file .env exec api python -m app.commands.create_superadmin --email vous@example.com
 ```
 
 Ce rôle ne contourne pas les autorisations métier ordinaires. Il donne uniquement accès aux endpoints explicitement protégés par `require_superadmin`, dont `/api/admin/status` sert actuellement de sonde pour la future interface d'administration.
 
-Seuls Caddy (80/443 selon la configuration) doit être exposé sur Internet. PostgreSQL, Redis et l’API restent sur le réseau Docker privé. Sauvegardez régulièrement PostgreSQL et testez une restauration avant la mise en production.
+Seul Caddy (80/443 selon la configuration) doit être exposé sur Internet. PostgreSQL et l’API restent sur le réseau Docker privé. Sauvegardez régulièrement PostgreSQL et testez une restauration avant la mise en production. Redis ne fait plus partie du Compose. Un ancien conteneur `cocoon-redis-1` peut encore apparaître dans Docker Desktop : après examen des conteneurs orphelins, `docker compose --env-file .env up -d --remove-orphans` les retire sans supprimer leurs volumes. Retirer la déclaration `redis_data` du Compose ne supprime pas le volume déjà créé ; inventoriez ses données avant toute suppression physique.
 
 ### Métriques internes
 
 Les compteurs HTTP agrégés sont disponibles sur `/internal/metrics` uniquement lorsque
 `METRICS_TOKEN` est configuré avec au moins 32 caractères. Le scraper interne doit envoyer
 ce secret dans `X-Metrics-Token`. Sans cette variable, la route renvoie 404 ; aucun compteur
-ou contenu de requête n’est exposé publiquement.
+ou contenu de requête n’est exposé publiquement. Avec Compose, Caddy bloque cette route et
+l'API n'a pas de port hôte : une sonde doit tourner sur le réseau privé ou dans le conteneur API.
 
-Une sonde PowerShell prête à être appelée par le planificateur de la machine ou un superviseur
-externe vérifie la readiness, le nombre de requêtes en cours et les réponses HTTP 5xx :
+Pour un lancement natif où l'API écoute seulement sur l'interface locale, une sonde PowerShell
+peut vérifier la readiness, le nombre de requêtes en cours et les réponses HTTP 5xx :
 
 ```powershell
 .\scripts\check-metrics.ps1 -BaseUrl http://127.0.0.1:8000 -MetricsToken $env:COCOON_METRICS_TOKEN

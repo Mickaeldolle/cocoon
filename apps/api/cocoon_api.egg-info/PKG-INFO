@@ -13,8 +13,8 @@ Requires-Dist: pydantic-settings<3,>=2.6
 Requires-Dist: PyJWT<3,>=2.10
 Requires-Dist: SQLAlchemy<3,>=2.0
 Requires-Dist: uvicorn[standard]<1,>=0.32
-Requires-Dist: websockets<18,>=15
 Requires-Dist: webauthn<3,>=2.2
+Requires-Dist: pywebpush<3,>=2.5
 Provides-Extra: dev
 Requires-Dist: httpx<1,>=0.28; extra == "dev"
 Requires-Dist: pytest<9,>=8.3; extra == "dev"
