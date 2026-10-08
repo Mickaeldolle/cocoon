@@ -11,8 +11,7 @@ Application Expo (iOS / Android)
           Caddy
             ▼
        FastAPI (REST)
-       ├── PostgreSQL : utilisateurs, appareils, sessions
-       └── Redis : base pour cache, temps réel et futures tâches
+       └── PostgreSQL : utilisateurs, appareils, sessions et files durables
 ```
 
 ## Authentification standard

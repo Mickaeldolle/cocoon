@@ -38,6 +38,9 @@ export default function HomeScreen() {
   const initialized = useSessionStore((state) => state.initialized);
   const token = useSessionStore((state) => state.accessToken);
   const user = useSessionStore((state) => state.user);
+  const deferredNotificationAccountId = useSessionStore(
+    (state) => state.deferredNotificationAccountId,
+  );
   const refreshUser = useSessionStore((state) => state.refreshUser);
   const assistantEnabled = user?.enable_assistant === true;
   const secretToken = useSecretAccessStore((state) => state.token);
@@ -99,6 +102,10 @@ export default function HomeScreen() {
   const checkPush = useCallback(
     async (isCancelled: () => boolean = () => false) => {
       if (!token || !user?.id) return;
+      if (deferredNotificationAccountId === user?.id) {
+        setPushAction(null);
+        return;
+      }
       try {
         const consents = await authApi.listConsents(token);
         if (isCancelled()) return;
@@ -128,7 +135,7 @@ export default function HomeScreen() {
         );
       }
     },
-    [token, user?.id],
+    [token, user?.id, deferredNotificationAccountId],
   );
   useFocusEffect(
     useCallback(() => {

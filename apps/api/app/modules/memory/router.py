@@ -40,40 +40,64 @@ def memory_response(memory: MemoryItem) -> MemoryResponse:
         valid_until=memory.valid_until,
         supersedes_id=memory.supersedes_id,
         created_at=memory.created_at,
+        observed_at=memory.observed_at,
+        state=memory.state.value,
+        entity=memory.entity,
+        attribute=memory.attribute,
+        value=memory.value,
+        origin=memory.origin,
     )
 
 
 @router.get("", response_model=MemoryListResponse)
 def list_memories(
     limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=1000000),
+    scope_id: UUID | None = Query(default=None),
+    include_history: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> MemoryListResponse:
     now = datetime.now(UTC)
-    memories = session.scalars(
-        select(MemoryItem)
-        .where(
-            MemoryItem.user_id == current_user.id,
-            MemoryItem.owner_type == "user",
-            MemoryItem.scope_type == "personal",
+    query = select(MemoryItem)
+    if scope_id is not None:
+        query = query.where(MemoryItem.scope_type == "project", MemoryItem.scope_id == scope_id)
+    else:
+        query = query.where(MemoryItem.scope_type.in_(["personal", "project"]))
+    query = query.where(
+        MemoryItem.user_id == current_user.id,
+        MemoryItem.owner_type == "user",
+        MemoryItem.deleted_at.is_(None),
+    )
+    if not include_history:
+        query = query.where(
             MemoryItem.state == MemoryState.ACTIVE,
-            MemoryItem.deleted_at.is_(None),
             or_(MemoryItem.valid_from.is_(None), MemoryItem.valid_from <= now),
             or_(MemoryItem.valid_until.is_(None), MemoryItem.valid_until > now),
         )
-        .order_by(MemoryItem.observed_at.desc())
-        .limit(limit)
+    memories = list(
+        session.scalars(
+            query.order_by(MemoryItem.observed_at.desc(), MemoryItem.id)
+            .offset(offset)
+            .limit(limit + 1)
+        )
     )
-    return MemoryListResponse(memories=[memory_response(memory) for memory in memories])
+    return MemoryListResponse(
+        memories=[memory_response(memory) for memory in memories[:limit]],
+        next_offset=offset + limit if len(memories) > limit else None,
+    )
 
 
 @router.get("/{memory_id}", response_model=MemoryResponse)
 def read_memory(
     memory_id: UUID,
+    include_history: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> MemoryResponse:
-    return memory_response(get_owned_memory(session, current_user.id, memory_id))
+    return memory_response(
+        get_owned_memory(session, current_user.id, memory_id, active_only=not include_history)
+    )
 
 
 @router.patch("/{memory_id}", response_model=MemoryResponse)

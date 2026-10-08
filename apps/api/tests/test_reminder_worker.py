@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.commands import run_reminder_worker as worker
 from app.modules.assistant.models import AssistantPreference, NotificationOutbox, RecurringReminder
-from app.modules.auth.models import Device, User
+from app.modules.auth.models import Device, User, UserConsent
 
 
 def test_bounded_notification_run_leaves_remaining_items_for_next_run(
@@ -51,9 +51,54 @@ def _user(client: TestClient):
     )
     session = client.app.state.test_session_factory()
     try:
-        return session.query(User).one().id
+        user_id = session.query(User).one().id
+        session.add(UserConsent(user_id=user_id, policy_key="notifications.push", policy_version=1))
+        session.commit()
+        return user_id
     finally:
         session.close()
+
+
+def test_worker_does_not_send_queued_push_after_consent_revocation(
+    client: TestClient, monkeypatch
+) -> None:
+    user_id = _user(client)
+    session_factory = client.app.state.test_session_factory
+    with session_factory() as session:
+        session.add(
+            Device(
+                user_id=user_id,
+                installation_id="revoked-installation",
+                name="Revoked device",
+                platform="android",
+                push_token="ExponentPushToken[revoked]",
+            )
+        )
+        item = NotificationOutbox(
+            user_id=user_id,
+            dedupe_key="revoked-consent-test",
+            title="Cocoon",
+            body="Rappel",
+            data={"kind": "reminder"},
+        )
+        session.add(item)
+        session.flush()
+        item_id = item.id
+        consent = session.query(UserConsent).filter_by(user_id=user_id).one()
+        consent.revoked_at = datetime.now(UTC)
+        session.commit()
+    monkeypatch.setattr(worker, "SessionLocal", session_factory)
+
+    def unexpected_send(*_args, **_kwargs):
+        raise AssertionError("Aucun appel push après révocation")
+
+    monkeypatch.setattr(worker, "urlopen", unexpected_send)
+    assert worker.send_pending_notifications(datetime.now(UTC)) == 0
+    with session_factory() as session:
+        stored = session.get(NotificationOutbox, item_id)
+        assert stored is not None
+        assert stored.cancelled_at is not None
+        assert stored.last_error_code == "consent_absent"
 
 
 def test_recurring_reminder_catches_up_and_is_idempotent(

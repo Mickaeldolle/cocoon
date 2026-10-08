@@ -1,3 +1,3 @@
 """Vercel's FastAPI entrypoint; routes remain defined in app.main."""
 
-from app.main import app
+from app.main import app as app

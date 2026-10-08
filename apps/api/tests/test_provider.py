@@ -47,12 +47,14 @@ def test_factory_chooses_ollama_and_openai_compatible() -> None:
 def test_openai_chat_uses_configured_model_and_secret_only_on_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = OpenAICompatibleProvider(settings())
+    provider = OpenAICompatibleProvider(settings(llm_max_output_tokens=768))
 
     def handle(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/chat/completions"
         assert request.headers["Authorization"] == "Bearer test-key"
-        assert json.loads(request.content)["model"] == "test-model"
+        body = json.loads(request.content)
+        assert body["model"] == "test-model"
+        assert body["max_tokens"] == 768
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": "Salut"}, "finish_reason": "stop"}]},
@@ -70,7 +72,9 @@ def test_openai_stream_delivers_deltas_and_closes_on_cancellation(
     cancelled = Event()
 
     def handle(request: httpx.Request) -> httpx.Response:
-        assert json.loads(request.content)["stream"] is True
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        assert body["max_tokens"] == 2048
         return httpx.Response(
             200,
             text='data: {"choices":[{"delta":{"content":"Bonjour"}}]}\n\n'
@@ -110,6 +114,7 @@ def test_ollama_chat_and_stream(monkeypatch: pytest.MonkeyPatch) -> None:
         assert request.url.path == "/api/chat"
         body = json.loads(request.content)
         assert body["model"] == "qwen3:8b"
+        assert body["options"]["num_predict"] == 2048
         if body["stream"]:
             return httpx.Response(
                 200, text='{"message":{"content":"Salut"},"done":false}\n'
@@ -226,3 +231,5 @@ def test_configuration_validation() -> None:
         settings(llm_provider="ollama")
     with pytest.raises(ValueError, match="LLM_BASE_URL"):
         Settings(_env_file=None, jwt_secret=SECRET, llm_base_url="http://localhost:1234/v1")
+    with pytest.raises(ValueError, match="llm_max_output_tokens"):
+        settings(llm_max_output_tokens=0)

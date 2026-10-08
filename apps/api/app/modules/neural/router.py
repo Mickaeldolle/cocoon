@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime, time
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -18,15 +18,14 @@ from app.modules.assistant.proposals import (
 from app.modules.auth.dependencies import get_current_user, require_assistant_enabled
 from app.modules.auth.models import User
 from app.modules.neural.models import (
-    Capture,
     CaptureRun,
     CaptureRunEvent,
     CaptureRunStatus,
-    CaptureSource,
     MemoryItem,
     MemoryState,
     NeuralProposal,
 )
+from app.modules.neural.presentation import proposal_response
 from app.modules.neural.schemas import (
     CaptureCreate,
     CaptureResponse,
@@ -36,140 +35,10 @@ from app.modules.neural.schemas import (
     HomeSignal,
     ProposalResponse,
 )
-from app.modules.neural.service import parse_reminder_at, safe_timezone, understand
 from app.modules.neural.worker import create_capture_run, process_capture_run
 from app.modules.personal.models import PersonalTask
 
 router = APIRouter(prefix="/api", tags=["neural"])
-
-
-def proposal_response(item: NeuralProposal) -> ProposalResponse:
-    return ProposalResponse(
-        id=item.id,
-        capability=item.capability,
-        payload=item.payload,
-        payload_version=item.payload_version,
-        reason=item.reason,
-        status=item.status,
-        confirmed_at=item.confirmed_at,
-        label=str(item.payload.get("label") or item.payload.get("title") or item.capability),
-    )
-
-
-def _capture(session: Session, current_user: User, payload: CaptureCreate) -> CaptureResponse:
-    content = " ".join(payload.text.split())
-    capture = Capture(
-        user_id=current_user.id,
-        source=CaptureSource.TEXT,
-        content=content,
-        timezone=safe_timezone(payload.timezone).key,
-    )
-    session.add(capture)
-    session.flush()
-    run = CaptureRun(user_id=current_user.id, capture_id=capture.id)
-    session.add(run)
-    session.flush()
-    session.add(
-        CaptureRunEvent(
-            run_id=run.id,
-            sequence=1,
-            event_type="capture_persisted",
-            payload={"source": capture.source.value},
-        )
-    )
-    # Persist the raw signal before any model work so interruptions never lose it.
-    session.commit()
-    result = understand(content)
-    proposals: list[NeuralProposal] = []
-    due_date = result.payload.get("due_date")
-    reminder_at = parse_reminder_at(content, payload.timezone, result.review_at)
-    if result.capability == "reminder":
-        if reminder_at is None and result.review_at is not None:
-            local_date = result.review_at.astimezone(safe_timezone(payload.timezone)).date()
-            reminder_at = datetime.combine(
-                local_date,
-                time(9, 0),
-                tzinfo=safe_timezone(payload.timezone),
-            ).astimezone(UTC)
-        task_payload = {
-            "title": str(result.payload.get("title") or result.summary)[:160],
-            "due_date": due_date,
-            "reminder_at": reminder_at.isoformat() if reminder_at else None,
-        }
-        proposals.append(
-            NeuralProposal(
-                user_id=current_user.id,
-                capture_id=capture.id,
-                capability="reminder",
-                payload=task_payload,
-                reason="Rendez-vous daté : je vous propose un rappel pour ne pas le manquer.",
-            )
-        )
-    elif result.capability == "task":
-        task_payload = {
-            "title": str(result.payload.get("title") or result.summary)[:160],
-            "due_date": due_date,
-        }
-        proposals.append(
-            NeuralProposal(
-                user_id=current_user.id,
-                capture_id=capture.id,
-                capability="task",
-                payload=task_payload,
-                reason="Créer une tâche personnelle à partir de cette capture.",
-            )
-        )
-        if reminder_at is not None:
-            proposals.append(
-                NeuralProposal(
-                    user_id=current_user.id,
-                    capture_id=capture.id,
-                    capability="reminder",
-                    payload={**task_payload, "reminder_at": reminder_at.isoformat()},
-                    reason="Créer la tâche et programmer le rappel demandé.",
-                )
-            )
-        proposals.append(
-            NeuralProposal(
-                user_id=current_user.id,
-                capture_id=capture.id,
-                capability="note",
-                payload={"summary": result.summary, "kind": result.kind.value},
-                reason="Conserver cette capture comme pensée personnelle.",
-            )
-        )
-    elif not result.clarification:
-        proposals.append(
-            NeuralProposal(
-                user_id=current_user.id,
-                capture_id=capture.id,
-                capability="note",
-                payload={"summary": result.summary, "kind": result.kind.value},
-                reason="Conserver cette capture comme pensée personnelle.",
-            )
-        )
-    session.add_all(proposals)
-    run.status = CaptureRunStatus.COMPLETED
-    run.finished_at = datetime.now(UTC)
-    session.add(
-        CaptureRunEvent(
-            run_id=run.id,
-            sequence=2,
-            event_type="completed",
-            payload={"proposal_count": len(proposals)},
-        )
-    )
-    session.commit()
-    for item in proposals:
-        session.refresh(item)
-    return CaptureResponse(
-        id=capture.id,
-        run_id=run.id,
-        summary=result.summary,
-        clarification=result.clarification,
-        proposals=[proposal_response(item) for item in proposals[:3]],
-        mode=result.mode,
-    )
 
 
 @router.get("/runs/{run_id}", response_model=CaptureRunResponse)
@@ -404,6 +273,7 @@ def confirm(
         session.commit()
         raise HTTPException(status_code=422, detail="La proposition est invalide.") from error
     session.query(NeuralProposal).filter(
+        NeuralProposal.user_id == current_user.id,
         NeuralProposal.capture_id == proposal.capture_id,
         NeuralProposal.id != proposal.id,
         NeuralProposal.status == "pending",

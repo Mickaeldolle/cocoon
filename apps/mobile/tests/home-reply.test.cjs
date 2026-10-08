@@ -36,16 +36,16 @@ test('home waits for the complete response and forwards the original idempotency
   const started = deferred();
   const calls = [];
   const { client, requestHomeReply } = setup({
-    freeModels: async () => ({
-      available: true,
-      default_model: 'free-model',
-      models: [{ id: 'free-model' }],
-    }),
     streamChat: (...args) => {
       calls.push(args);
       started.resolve();
       return stream.promise;
     },
+  });
+  client.setQueryData(['assistant', 'free-models', 'owner'], {
+    available: true,
+    default_model: 'free-model',
+    models: [{ id: 'free-model' }],
   });
   const controller = new AbortController();
   let completed = false;
@@ -66,21 +66,18 @@ test('home waits for the complete response and forwards the original idempotency
   client.clear();
 });
 
-test('cancellation while loading models prevents sending the message', async () => {
-  const models = deferred();
-  let sends = 0;
+test('an unavailable model catalog does not delay a direct message', async () => {
+  const calls = [];
   const { client, requestHomeReply } = setup({
-    freeModels: () => models.promise,
-    streamChat: () => {
-      sends += 1;
+    freeModels: () => assert.fail('The optional catalog must not be requested before sending'),
+    streamChat: async (...args) => {
+      calls.push(args);
+      return result;
     },
   });
-  const controller = new AbortController();
-  const pending = requestHomeReply(client, 'token', 'owner', turn, controller.signal);
-  controller.abort();
-  models.resolve({ available: false });
-  await assert.rejects(pending, { name: 'AbortError' });
-  assert.equal(sends, 0);
+  await requestHomeReply(client, 'token', 'owner', turn, new AbortController().signal);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][6], undefined);
   client.clear();
 });
 
@@ -125,20 +122,42 @@ test('retry keeps the same key and uses the standard configured provider without
   client.clear();
 });
 
-test('missing free models blocks sending, and completed handoffs are scoped to their owner', async () => {
-  let sends = 0;
+test('empty cached free catalog falls back to server default and handoffs stay scoped', async () => {
+  const calls = [];
   const { client, requestHomeReply, homeReplyKey } = setup({
-    freeModels: async () => ({ available: true, default_model: null, models: [] }),
-    streamChat: () => {
-      sends += 1;
+    streamChat: async (...args) => {
+      calls.push(args);
+      return result;
+    },
+  });
+  client.setQueryData(['assistant', 'free-models', 'owner'], {
+    available: true,
+    default_model: null,
+    models: [],
+  });
+  await requestHomeReply(client, 'token', 'owner', turn, new AbortController().signal);
+  assert.equal(calls[0][6], undefined);
+  client.setQueryData(homeReplyKey('owner', turn.key), result);
+  assert.equal(client.getQueryData(homeReplyKey('other-owner', turn.key)), undefined);
+  client.clear();
+});
+
+test('an explicitly selected invalid model returns the server error', async () => {
+  const { client, requestHomeReply } = setup({
+    streamChat: async (_token, _text, _handlers, _signal, _key, _retry, model) => {
+      assert.equal(model, 'vendor/retired:free');
+      throw new Error('Ce modèle gratuit n’est plus disponible.');
     },
   });
   await assert.rejects(
-    requestHomeReply(client, 'token', 'owner', turn, new AbortController().signal),
-    /Aucun modèle/,
+    requestHomeReply(
+      client,
+      'token',
+      'owner',
+      { ...turn, model: 'vendor/retired:free' },
+      new AbortController().signal,
+    ),
+    /plus disponible/,
   );
-  assert.equal(sends, 0);
-  client.setQueryData(homeReplyKey('owner', turn.key), result);
-  assert.equal(client.getQueryData(homeReplyKey('other-owner', turn.key)), undefined);
   client.clear();
 });

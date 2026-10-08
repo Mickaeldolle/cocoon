@@ -7,6 +7,7 @@ import { AppState } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import './global.css';
+import '@/src/services/pwa-install';
 
 import { useThemeStore } from '@/src/stores/theme-store';
 import { useWebViewportHeight } from '@/src/hooks/use-web-viewport-height';
@@ -78,7 +79,13 @@ export default function RootLayout() {
     };
   }, []);
   useEffect(() => {
-    if (previousUserId.current !== undefined && previousUserId.current !== userId) {
+    // A fresh restore starts with no user and an empty cache. Clearing here can
+    // cancel the first query of a directly opened authenticated route.
+    if (
+      previousUserId.current !== undefined &&
+      previousUserId.current !== null &&
+      previousUserId.current !== userId
+    ) {
       clearSecretAccess();
       queryClient.clear();
     }

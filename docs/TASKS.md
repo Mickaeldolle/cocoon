@@ -191,7 +191,7 @@ Les lots ci-dessus restent les unités de résultat. Les cases suivantes sont le
 - `[x]` Rendre la lecture d’événements reprenable avec `after_sequence` et `Last-Event-ID`, contrôlés par owner.
 - `[~]` Ajouter annulation serveur ; le worker revalide maintenant l’état juste avant la persistance, le mobile peut annuler un run connu et ne crée plus de proposition après une annulation concurrente, tandis que l’annulation fine d’une génération provider et la validation appareil restent à finaliser.
 - `[x]` Remplacer les étapes de progression fictives par des événements réellement exécutés ; le flux expose uniquement `capture_persisted`, `claimed`, `understand_started`, `completed` ou `failed` effectivement persistés.
-- `[~]` Tester coupure réseau, reprise mobile, redémarrage worker et erreur DB ; le mobile consomme désormais SSE, persiste la capture interrompue, vérifie le même `run_id` après remontage et attend brièvement un run `queued/running` sans recréer la capture, tandis que la reprise réelle après fermeture forcée, l’erreur DB et la concurrence PostgreSQL restent ouvertes.
+- `[~]` Tester coupure réseau, reprise mobile, redémarrage worker et erreur DB ; l'API conserve une capture avant traitement et peut reprendre un run au bail expiré avec la même clé. L'accueil mobile envoie directement au chat et ne persiste pas ce brouillon après fermeture forcée ; il lit encore les captures locales éventuellement enregistrées par une ancienne version. Qualifier cette migration, l'erreur DB et la concurrence PostgreSQL.
 
 ### B04 — Runtime LLM local et outils contrôlés
 

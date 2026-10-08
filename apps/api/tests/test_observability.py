@@ -1,5 +1,6 @@
 import logging
 
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 from app import main
@@ -32,7 +33,9 @@ def test_client_correlation_id_is_normalized(client: TestClient) -> None:
     assert len(response.headers["X-Request-ID"]) == 36
 
 
-def test_liveness_and_readiness_are_distinct(client: TestClient) -> None:
+def test_liveness_and_readiness_are_distinct(client: TestClient, monkeypatch) -> None:
+    with client.app.state.test_session_factory() as session:
+        monkeypatch.setattr(main, "engine", session.get_bind())
     assert client.get("/health").json() == {"status": "ok"}
     assert client.get("/health/ready").json() == {"status": "ready"}
 
@@ -68,10 +71,18 @@ def test_metrics_are_private_and_expose_only_aggregate_counters(
 
 
 def test_browser_preflight_allows_mvp_mutation_and_resume_headers(
-    client: TestClient, monkeypatch
+    client: TestClient,
 ) -> None:
-    monkeypatch.setattr(main.settings, "cors_origins", ["http://localhost:8081"])
-    response = client.options(
+    middleware = next(
+        item for item in main.app.user_middleware if item.cls is CORSMiddleware
+    )
+    options = {
+        **middleware.kwargs,
+        "allow_origins": ["http://localhost:8081"],
+        "allow_credentials": True,
+    }
+    cors_client = TestClient(CORSMiddleware(main.app, **options))
+    response = cors_client.options(
         "/api/memories/example",
         headers={
             "Origin": "http://localhost:8081",

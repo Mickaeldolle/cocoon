@@ -10,8 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.modules.assistant.models import (
+    AssistantMessage,
+    AssistantMessageRole,
     AssistantProposal,
     AssistantProposalKind,
+    AssistantThread,
     CalendarEvent,
     RecurringReminder,
 )
@@ -24,14 +27,17 @@ from app.modules.assistant.schemas import (
     TaskProposalPayload,
     TrainingProposalPayload,
 )
-from app.modules.memory.conflicts import preference_subject, supersede_conflicting_preference
-from app.modules.memory.typing import layer_for_memory_type
+from app.modules.auth.consents import require_active_consent
+from app.modules.memory.conflicts import supersede_conflicting_preference
+from app.modules.memory.service import assert_source_available
+from app.modules.memory.typing import classify_memory, layer_for_memory_type
+from app.modules.memory.working import current_projects
 from app.modules.neural.models import (
     Capture,
+    CaptureRun,
     CaptureSource,
     MemoryItem,
     MemoryKind,
-    MemoryType,
     NeuralProposal,
 )
 from app.modules.personal.models import GroceryItem, GroceryList, PersonalTask, TrainingSession
@@ -96,7 +102,34 @@ def execute_assistant_proposal(
             timing=data.timing,
         )
     elif proposal.kind is AssistantProposalKind.NOTE:
+        require_active_consent(session, user_id, "assistant.memory", for_update=True)
         data = NoteProposalPayload.model_validate(proposal.payload)
+        source = session.scalar(
+            select(AssistantMessage)
+            .join(AssistantThread, AssistantThread.id == AssistantMessage.thread_id)
+            .where(
+                AssistantMessage.id == proposal.assistant_message_id,
+                AssistantThread.user_id == user_id,
+            )
+        )
+        user_source = (
+            session.scalar(
+                select(AssistantMessage).where(
+                    AssistantMessage.id == source.source_user_message_id,
+                    AssistantMessage.thread_id == source.thread_id,
+                    AssistantMessage.role == AssistantMessageRole.USER,
+                )
+            )
+            if source is not None and source.source_user_message_id is not None
+            else None
+        )
+        if user_source is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="La source utilisateur de cette proposition est introuvable.",
+            )
+        assert_source_available(session, user_id, "message", proposal.assistant_message_id)
+        assert_source_available(session, user_id, "message", user_source.id)
         capture = Capture(
             user_id=user_id,
             source=CaptureSource.TEXT,
@@ -105,16 +138,24 @@ def execute_assistant_proposal(
         )
         session.add(capture)
         session.flush()
-        memory_type = MemoryType.PREFERENCE if preference_subject(data.summary) else MemoryType.FACT
-        previous = supersede_conflicting_preference(session, user_id, data.summary)
+        memory_type = classify_memory(data.summary)
+        projects = current_projects(session, user_id, user_source.content)
+        scope_type = "project" if len(projects) == 1 else "personal"
+        scope_id = projects[0] if len(projects) == 1 else None
+        previous = supersede_conflicting_preference(
+            session, user_id, data.summary, scope_type=scope_type, scope_id=scope_id
+        )
         resource = MemoryItem(
             user_id=user_id,
             capture_id=capture.id,
             kind=MemoryKind.INFORMATION,
             layer=layer_for_memory_type(memory_type),
             memory_type=memory_type,
-            source_type="assistant_message",
-            source_message_id=proposal.assistant_message_id,
+            source_type="user_message",
+            source_message_id=user_source.id,
+            origin="explicit",
+            scope_type=scope_type,
+            scope_id=scope_id,
             summary=data.summary,
             reason="Pensée conservée à votre demande depuis l’assistant.",
             supersedes_id=previous.id if previous is not None else None,
@@ -169,10 +210,23 @@ def execute_assistant_proposal(
     return resource
 
 
-def execute_capture_proposal(
-    session: Session, proposal: NeuralProposal, user_id: UUID
-) -> object:
+def execute_capture_proposal(session: Session, proposal: NeuralProposal, user_id: UUID) -> object:
     """Validate and create the resource represented by a capture proposal."""
+    if proposal.user_id != user_id:
+        raise HTTPException(status_code=422, detail="Source de proposition invalide.")
+    source_capture = session.scalar(
+        select(Capture).where(Capture.id == proposal.capture_id, Capture.user_id == user_id)
+    )
+    if source_capture is None:
+        raise HTTPException(status_code=422, detail="Source de proposition invalide.")
+    if proposal.source_run_id is not None and session.scalar(
+        select(CaptureRun.id).where(
+            CaptureRun.id == proposal.source_run_id,
+            CaptureRun.user_id == user_id,
+            CaptureRun.capture_id == source_capture.id,
+        )
+    ) is None:
+        raise HTTPException(status_code=422, detail="Source de proposition invalide.")
     if proposal.capability in {"task", "reminder"}:
         title = proposal.payload.get("title")
         if not isinstance(title, str) or not title.strip() or len(title) > 160:
@@ -204,6 +258,8 @@ def execute_capture_proposal(
         return resource
 
     if proposal.capability == "note":
+        require_active_consent(session, user_id, "assistant.memory", for_update=True)
+        assert_source_available(session, user_id, "capture", proposal.capture_id)
         summary = proposal.payload.get("summary")
         if not isinstance(summary, str) or not summary.strip() or len(summary) > 240:
             raise HTTPException(status_code=422, detail="La pensée proposée est invalide.")
@@ -215,8 +271,15 @@ def execute_capture_proposal(
             raise HTTPException(
                 status_code=422, detail="Le type de pensée est invalide."
             ) from error
-        memory_type = MemoryType.PREFERENCE if preference_subject(summary) else MemoryType.FACT
-        previous = supersede_conflicting_preference(session, user_id, summary)
+        memory_type = classify_memory(summary)
+        projects = current_projects(
+            session, user_id, source_capture.content
+        )
+        scope_type = "project" if len(projects) == 1 else "personal"
+        scope_id = projects[0] if len(projects) == 1 else None
+        previous = supersede_conflicting_preference(
+            session, user_id, summary, scope_type=scope_type, scope_id=scope_id
+        )
         resource = MemoryItem(
             user_id=user_id,
             capture_id=proposal.capture_id,
@@ -226,6 +289,9 @@ def execute_capture_proposal(
             memory_type=memory_type,
             summary=summary.strip(),
             reason=proposal.reason,
+            origin="explicit",
+            scope_type=scope_type,
+            scope_id=scope_id,
             supersedes_id=previous.id if previous is not None else None,
         )
         session.add(resource)

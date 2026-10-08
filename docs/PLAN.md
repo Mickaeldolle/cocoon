@@ -70,7 +70,7 @@ Le fil familial, les albums, la messagerie enrichie et les salons cachés ne blo
 | Réponses progressives | REST + SSE ; polling de reprise | Le mobile peut retrouver le résultat après coupure ; WebSocket réservé à la messagerie existante |
 | Notifications | `expo-notifications` à intégrer, Expo Push vers APNs/FCM | Enregistrement par appareil, tickets/reçus, gestion des jetons invalides |
 | Infrastructure | Linux, Docker Compose, Caddy HTTPS | Déploiement simple ; développement local possible sans Docker |
-| Redis existant | Limites partagées et éventuel Pub/Sub | Seulement si utilisé ; pas de seconde file de rappels concurrente |
+| Redis retiré du Compose | Limites partagées et éventuel Pub/Sub | Ne le réintroduire que si un besoin mesuré le justifie ; pas de seconde file de rappels concurrente |
 | Fichiers ultérieurs | Adaptateur S3 | Non requis pour l’audio éphémère ; ACL et métadonnées SQL, URLs temporaires, quotas |
 | Qualité | pytest, PostgreSQL de test, Ruff, TypeScript, ESLint, CI | Tests déterministes séparés des évaluations réelles Ollama/STT/push |
 | Exploitation | Logs JSON, métriques, sondes et alertes | Corrélation par run sans contenu privé par défaut |

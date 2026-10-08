@@ -12,6 +12,7 @@ from app.modules.family_spaces import models as family_space_models  # noqa: F40
 from app.modules.personal import models as personal_models  # noqa: F401
 from app.modules.assistant import models as assistant_models  # noqa: F401
 from app.modules.neural import models as neural_models  # noqa: F401
+from app.modules.memory import models as memory_models  # noqa: F401
 from app.modules.secret import models as secret_models  # noqa: F401
 
 config = context.config

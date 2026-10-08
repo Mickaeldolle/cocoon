@@ -142,6 +142,10 @@ class MemoryItem(Base):
     scope_type: Mapped[str] = mapped_column(String(24), default="personal")
     scope_id: Mapped[UUID | None] = mapped_column(nullable=True)
     source_type: Mapped[str] = mapped_column(String(32), default="capture")
+    entity: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    attribute: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    value: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    origin: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_run_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("capture_runs.id", ondelete="SET NULL"), nullable=True, index=True
     )

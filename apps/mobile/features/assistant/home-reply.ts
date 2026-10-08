@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query';
-import { assistantApi, type AssistantChat } from '@/src/services/api';
+import { assistantApi, type AssistantChat, type AssistantFreeModels } from '@/src/services/api';
 
 export type HomeReply = {
   key: string;
@@ -19,7 +19,7 @@ function checkAborted(signal: AbortSignal) {
   }
 }
 
-// Resolve the same default model as the conversation, then use its existing SSE API.
+// The configured server model can answer before the optional free-model catalog loads.
 export async function requestHomeReply(
   client: QueryClient,
   token: string,
@@ -27,20 +27,13 @@ export async function requestHomeReply(
   turn: { key: string; text: string; retry: boolean; model?: string },
   signal: AbortSignal,
 ): Promise<HomeReply> {
-  const models = await client.fetchQuery({
-    queryKey: ['assistant', 'free-models', userId],
-    queryFn: () => assistantApi.freeModels(token),
-    staleTime: 300_000,
-    retry: false,
-  });
   checkAborted(signal);
-  const model = models.available
-    ? (
-        models.models.find((item) => item.id === turn.model) ??
-        models.models.find((item) => item.id === models.default_model)
-      )?.id
-    : undefined;
-  if (models.available && !model) throw new Error('Aucun modèle gratuit disponible. Réessayez.');
+  const models = client.getQueryData<AssistantFreeModels>(['assistant', 'free-models', userId]);
+  const model =
+    turn.model ??
+    (models?.available
+      ? models.models.find((item) => item.id === models.default_model)?.id
+      : undefined);
   const result = await assistantApi.streamChat(
     token,
     turn.text,

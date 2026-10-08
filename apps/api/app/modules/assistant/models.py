@@ -57,6 +57,16 @@ class AssistantMessage(Base):
         SqlEnum(AssistantMessageRole, native_enum=False), nullable=False
     )
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    source_user_message_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "assistant_messages.id",
+            name="fk_assistant_messages_source_user_message_id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+        index=True,
+    )
+    working_choices: Mapped[list[str] | None] = mapped_column(json_type, nullable=True)
     content: Mapped[str] = mapped_column(Text())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

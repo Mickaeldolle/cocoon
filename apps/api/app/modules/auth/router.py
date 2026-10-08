@@ -501,12 +501,16 @@ def revoke_consent(
         select(UserConsent).where(
             UserConsent.user_id == current_user.id,
             UserConsent.policy_key == policy_key,
-        )
+        ).with_for_update()
     )
     if consent is None:
         raise HTTPException(status_code=404, detail="Consentement introuvable.")
     note_request_details(request, policy_key=policy_key)
     consent.revoked_at = datetime.now(UTC)
+    if policy_key == "assistant.memory":
+        from app.modules.memory.service import invalidate_user_indexes
+
+        invalidate_user_indexes(session, current_user.id)
     if policy_key == "notifications.push":
         session.query(Device).filter(Device.user_id == current_user.id).update(
             {Device.push_token: None}, synchronize_session=False
