@@ -18,8 +18,11 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 FROM runtime AS test
 
 USER root
+WORKDIR /workspace/apps/api
+COPY --from=runtime /app/ ./
 COPY tests ./tests
-RUN pip install --no-cache-dir ".[dev]"
+COPY --from=validation_docs . /workspace/docs
+RUN pip install --no-cache-dir ".[dev]" && chown -R cocoon:cocoon /workspace/apps/api
 
 USER cocoon
 CMD ["sh", "-c", "ruff check . && pytest"]

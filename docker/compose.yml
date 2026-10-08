@@ -5,6 +5,7 @@ services:
       dockerfile: docker/Caddy.Dockerfile
       args:
         EXPO_PUBLIC_API_URL: ${EXPO_PUBLIC_API_URL:-http://localhost:8080}
+    restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
@@ -24,6 +25,8 @@ services:
   api:
     build:
       context: ../apps/api
+      target: runtime
+    restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -88,6 +91,7 @@ services:
   migrate:
     build:
       context: ../apps/api
+      target: runtime
     environment:
       DATABASE_URL: ${DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -104,6 +108,8 @@ services:
     build:
       context: ../apps/api
       target: test
+      additional_contexts:
+        validation_docs: ../docs
     environment:
       DATABASE_URL: sqlite:///./unused-test.db
       JWT_SECRET: test-secret-that-is-long-enough-for-validation
@@ -114,6 +120,8 @@ services:
   reminder-worker:
     build:
       context: ../apps/api
+      target: runtime
+    restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -136,6 +144,8 @@ services:
   capture-worker:
     build:
       context: ../apps/api
+      target: runtime
+    restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -171,6 +181,8 @@ services:
     profiles: [memory]
     build:
       context: ../apps/api
+      target: runtime
+    restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
       JWT_SECRET: ${JWT_SECRET}
@@ -197,6 +209,7 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -221,5 +234,3 @@ volumes:
   caddy_data:
   caddy_config:
   postgres_data:
-  # Legacy Redis volume kept so removing the unused service cannot erase old data.
-  redis_data:

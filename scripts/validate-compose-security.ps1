@@ -4,6 +4,10 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $composePath = Join-Path $repositoryRoot "docker\compose.yml"
 $compose = Get-Content -LiteralPath $composePath -Raw
 
+if ($compose -match '(?m)^  redis:' -or $compose -match '\bREDIS_URL\b') {
+    throw "Redis ne doit plus être démarré ni configuré par le Compose principal."
+}
+
 function Get-ServiceBlock([string]$name) {
     $escaped = [regex]::Escape($name)
     $match = [regex]::Match(
@@ -34,12 +38,19 @@ if ($migrate -notmatch '(?m)^\s+command:\s+\["alembic",\s+"upgrade",\s+"head"\]'
 }
 foreach ($serviceName in @("api", "capture-worker", "reminder-worker", "memory-worker")) {
     $service = Get-ServiceBlock $serviceName
+    if ($service -notmatch '(?m)^\s+target:\s+runtime\s*$') {
+        throw "Le service $serviceName doit utiliser l'image runtime sans dépendances de test."
+    }
     if ($service -match "alembic upgrade head") {
         throw "Le service $serviceName ne doit pas exécuter les migrations lui-même."
     }
     if ($service -notmatch "service_completed_successfully") {
         throw "Le service $serviceName doit attendre la réussite du service migrate."
     }
+}
+
+if ($migrate -notmatch '(?m)^\s+target:\s+runtime\s*$') {
+    throw "Le service migrate doit utiliser l'image runtime sans dépendances de test."
 }
 
 $memoryWorker = Get-ServiceBlock "memory-worker"

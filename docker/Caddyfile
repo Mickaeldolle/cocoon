@@ -1,12 +1,16 @@
 {$CADDY_SITE_ADDRESS} {
   encode zstd gzip
+  # Keep worker triggers and metrics on the private API network.
+  handle /api/internal/* {
+    respond 404
+  }
+  handle /internal/* {
+    respond 404
+  }
   handle /api/* {
     reverse_proxy api:8000
   }
   handle /health* {
-    reverse_proxy api:8000
-  }
-  handle /internal/* {
     reverse_proxy api:8000
   }
   handle {
