@@ -35,10 +35,14 @@ test('home never reactivates a push consent the user revoked', () => {
   assert.equal(homePushAction(revoked, 'prompt', 'android'), 'skip');
 });
 
-test('home registers existing permission and offers a gesture on web', () => {
-  assert.equal(homePushAction([], 'granted', 'web'), 'register');
-  assert.equal(homePushAction([], 'prompt', 'android'), 'register');
+test('home requires Cocoon consent before enrolling a device', () => {
+  const active = [{ policy_key: 'notifications.push', revoked_at: null }];
+  assert.equal(homePushAction([], 'granted', 'web'), 'offer');
+  assert.equal(homePushAction([], 'prompt', 'android'), 'offer');
   assert.equal(homePushAction([], 'prompt', 'web'), 'offer');
+  assert.equal(homePushAction(active, 'granted', 'web'), 'register');
+  assert.equal(homePushAction(active, 'prompt', 'android'), 'register');
+  assert.equal(homePushAction(active, 'prompt', 'web'), 'offer');
   assert.equal(homePushAction([], 'denied', 'web'), 'blocked');
   assert.equal(homePushAction([], 'unsupported', 'android'), 'skip');
 });

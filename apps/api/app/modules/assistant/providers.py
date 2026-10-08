@@ -261,7 +261,13 @@ class OpenAICompatibleProvider(_HTTPProvider):
         )
 
     def _payload(self, messages: list[dict[str, str]], stream: bool) -> dict[str, object]:
-        return {"model": self.model, "messages": messages, "temperature": 0.2, "stream": stream}
+        return {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": self.settings.llm_max_output_tokens,
+            "stream": stream,
+        }
 
     def _parse_result(self, body: object) -> ProviderResult:
         if not isinstance(body, dict):
@@ -315,7 +321,10 @@ class OllamaProvider(_HTTPProvider):
     def _payload(self, messages: list[dict[str, str]], stream: bool) -> dict[str, object]:
         return {
             "model": self.model, "messages": messages, "stream": stream,
-            "options": {"temperature": 0.2},
+            "options": {
+                "temperature": 0.2,
+                "num_predict": self.settings.llm_max_output_tokens,
+            },
         }
 
     def _parse_result(self, body: object) -> ProviderResult:

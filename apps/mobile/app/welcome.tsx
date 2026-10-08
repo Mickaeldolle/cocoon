@@ -1,4 +1,5 @@
 import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
+import { useQuery } from '@tanstack/react-query';
 import { Redirect, router } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -17,6 +18,17 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { OrbBirth } from '@/features/assistant/orb-birth';
 import { authApi } from '@/src/services/api';
+import {
+  homePushAction,
+  personalNotificationPermission,
+  registerForPersonalNotifications,
+} from '@/src/services/notifications';
+import {
+  promptPwaInstall,
+  pwaInstallOffer,
+  subscribeToPwaInstallOffer,
+  type PwaInstallOffer,
+} from '@/src/services/pwa-install';
 import { useSessionStore } from '@/src/stores/session-store';
 import { useThemeStore } from '@/src/stores/theme-store';
 import { darkTheme, lightTheme, subtleBackground, type ColorTokens } from '@/src/theme';
@@ -41,6 +53,11 @@ function firstStep(enabled: boolean) {
   return `Bientôt, si tu m'y autorises, je pourrai accéder à tes mails et à ton agenda pour t'aider à ne rien perdre de vue, préparer une liste de courses, te proposer des menus pour la semaine, construire un programme sportif adapté à tes objectifs, rechercher des offres d'emploi correspondant à ton profil... et bien d'autres choses encore !`;
 }
 
+const notificationMessage =
+  'Je te conseille d’autoriser les notifications. J’en aurai besoin pour te prévenir lorsqu’un rappel ou une information sera disponible. Tu peux aussi choisir plus tard, dans Rappels.';
+const installationMessage =
+  'Tu peux installer Cocoon sur cet appareil pour l’ouvrir directement depuis ton écran d’accueil. C’est facultatif.';
+
 export default function WelcomeScreen() {
   const initialized = useSessionStore((state) => state.initialized);
   const token = useSessionStore((state) => state.accessToken);
@@ -58,6 +75,9 @@ export default function WelcomeScreen() {
   const [name, setName] = useState(user?.assistant_name ?? 'Cocoon');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notificationsRegistered, setNotificationsRegistered] = useState(false);
+  const [installationStep, setInstallationStep] = useState(false);
+  const [installOffer, setInstallOffer] = useState<PwaInstallOffer>('unavailable');
   const chosenName = nameInput ?? user?.assistant_name ?? '';
   const finishBirth = useCallback(() => setHatched(true), []);
 
@@ -66,9 +86,35 @@ export default function WelcomeScreen() {
     presentation(name, user?.enable_assistant === true),
     concept(user?.enable_assistant === true),
     firstStep(user?.enable_assistant === true),
+    notificationMessage,
   ];
-  const message = messages[stepIndex] ?? messages[0];
+  const message = installationStep ? installationMessage : (messages[stepIndex] ?? messages[0]);
   const isLastStep = stepIndex === messages.length - 1;
+  const notificationStep = isLastStep && !installationStep;
+  const notificationOffer = useQuery({
+    queryKey: ['auth', 'welcome-notification-offer', user?.id],
+    enabled: Boolean(token && user && notificationStep),
+    retry: false,
+    queryFn: async () => {
+      const consents = await authApi.listConsents(token!);
+      const permission = await personalNotificationPermission();
+      return {
+        action: homePushAction(consents, permission, Platform.OS),
+        revoked: consents.some(
+          (consent) => consent.policy_key === 'notifications.push' && consent.revoked_at,
+        ),
+      };
+    },
+  });
+  const canEnableNotifications =
+    !notificationsRegistered &&
+    (notificationOffer.data?.action === 'offer' || notificationOffer.data?.action === 'register');
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const update = () => setInstallOffer(pwaInstallOffer());
+    update();
+    return subscribeToPwaInstallOffer(update);
+  }, []);
   function advance() {
     if (isLastStep) return;
     setVisible(0);
@@ -107,17 +153,63 @@ export default function WelcomeScreen() {
     }
   }
 
-  async function finish() {
-    if (!token || busy) return;
+  async function completeWelcome(enableNotifications: boolean) {
+    if (!token || !user) return;
     setBusy(true);
     setError(null);
     try {
-      const updated = await authApi.completeWelcome(token);
-      if (useSessionStore.getState().accessToken !== token) return;
-      useSessionStore.setState({ user: updated });
+      const current = useSessionStore.getState();
+      if (!current.accessToken || current.user?.id !== user.id) return;
+      const updated = await authApi.completeWelcome(current.accessToken);
+      if (useSessionStore.getState().user?.id !== user.id) return;
+      useSessionStore.setState({
+        user: updated,
+        deferredNotificationAccountId:
+          enableNotifications || notificationsRegistered ? null : user.id,
+      });
       router.replace('/home');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Impossible de terminer la présentation.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function finishNotifications(enableNotifications: boolean) {
+    if (!token || !user || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (enableNotifications && !notificationsRegistered) {
+        // On web, the browser permission request must begin in this button press.
+        await registerForPersonalNotifications(token);
+        if (useSessionStore.getState().user?.id !== user.id) return;
+        setNotificationsRegistered(true);
+      }
+      const offer = pwaInstallOffer();
+      if (offer !== 'unavailable') {
+        setInstallOffer(offer);
+        setVisible(0);
+        setInstallationStep(true);
+        return;
+      }
+      await completeWelcome(enableNotifications);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Impossible d’activer les notifications.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function installAndContinue() {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await promptPwaInstall();
+      await completeWelcome(notificationsRegistered);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Installation indisponible.');
     } finally {
       setBusy(false);
     }
@@ -192,18 +284,111 @@ export default function WelcomeScreen() {
               </Pressable>
             </View>
           ) : null}
-          {stepIndex > 0 && finishedMessage ? (
+          {stepIndex > 0 && !isLastStep && finishedMessage ? (
             <Pressable
-              auditAction={isLastStep ? 'welcome.complete' : 'welcome.continue'}
+              auditAction="welcome.continue"
               accessibilityRole="button"
-              disabled={isLastStep && busy}
-              onPress={isLastStep ? () => void finish() : advance}
+              onPress={advance}
               style={[styles.primary, styles.finish]}
             >
-              <Text style={styles.primaryText}>
-                {isLastStep ? (busy ? 'Ouverture…' : 'Commencer') : 'Continuer'}
-              </Text>
+              <Text style={styles.primaryText}>Continuer</Text>
             </Pressable>
+          ) : null}
+          {notificationStep && finishedMessage ? (
+            <View style={styles.actions}>
+              {notificationOffer.isPending ? (
+                <ActivityIndicator color={colors.spruce} />
+              ) : notificationOffer.isError ? (
+                <View>
+                  <Text accessibilityRole="alert" style={styles.hint}>
+                    Impossible de vérifier les notifications. Tu peux réessayer ou continuer.
+                  </Text>
+                  <Pressable
+                    auditAction="welcome.notifications.retry"
+                    accessibilityRole="button"
+                    disabled={busy}
+                    onPress={() => void notificationOffer.refetch()}
+                    style={styles.secondary}
+                  >
+                    <Text style={styles.secondaryText}>Réessayer</Text>
+                  </Pressable>
+                </View>
+              ) : notificationOffer.data?.revoked ? (
+                <Text style={styles.hint}>
+                  Tu as désactivé les notifications. Tu pourras les réactiver dans Rappels.
+                </Text>
+              ) : notificationOffer.data?.action === 'blocked' ? (
+                <Text style={styles.hint}>
+                  Les notifications sont bloquées dans les réglages de cet appareil. Tu pourras les
+                  activer plus tard.
+                </Text>
+              ) : notificationOffer.data?.action === 'skip' ? (
+                <Text style={styles.hint}>
+                  Les notifications ne sont pas disponibles dans cette version de l’application.
+                </Text>
+              ) : null}
+              {canEnableNotifications ? (
+                <Pressable
+                  auditAction="welcome.notifications.enable"
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={() => void finishNotifications(true)}
+                  style={[styles.primary, styles.finish]}
+                >
+                  <Text style={styles.primaryText}>
+                    {busy ? 'Activation…' : 'Autoriser les notifications'}
+                  </Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                auditAction={
+                  canEnableNotifications ? 'welcome.notifications.later' : 'welcome.complete'
+                }
+                accessibilityRole="button"
+                disabled={busy}
+                onPress={() => void finishNotifications(false)}
+                style={canEnableNotifications ? styles.secondary : [styles.primary, styles.finish]}
+              >
+                <Text style={canEnableNotifications ? styles.secondaryText : styles.primaryText}>
+                  {busy ? 'Ouverture…' : canEnableNotifications ? 'Plus tard' : 'Commencer'}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {installationStep && finishedMessage ? (
+            <View style={styles.actions}>
+              {installOffer === 'ios' ? (
+                <Text style={styles.hint}>
+                  Dans Safari, ouvre le menu Partager puis choisis « Ajouter à l’écran d’accueil ».
+                </Text>
+              ) : null}
+              {installOffer === 'prompt' ? (
+                <Pressable
+                  auditAction="welcome.pwa.install"
+                  accessibilityRole="button"
+                  disabled={busy}
+                  onPress={() => void installAndContinue()}
+                  style={[styles.primary, styles.finish]}
+                >
+                  <Text style={styles.primaryText}>
+                    {busy ? 'Installation…' : 'Installer Cocoon'}
+                  </Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                auditAction="welcome.pwa.continue"
+                accessibilityRole="button"
+                disabled={busy}
+                onPress={() => void completeWelcome(notificationsRegistered)}
+                style={
+                  installOffer === 'prompt' ? styles.secondary : [styles.primary, styles.finish]
+                }
+              >
+                <Text style={installOffer === 'prompt' ? styles.secondaryText : styles.primaryText}>
+                  {busy ? 'Ouverture…' : installOffer === 'prompt' ? 'Plus tard' : 'Commencer'}
+                </Text>
+              </Pressable>
+            </View>
           ) : null}
         </ScrollView>
       </KeyboardAvoidingView>
@@ -273,6 +458,18 @@ function makeStyles(colors: ColorTokens) {
     },
     primaryText: { color: colors.spruceOn, fontSize: 15, fontWeight: '800', textAlign: 'center' },
     finish: { marginTop: 24 },
+    secondary: {
+      alignItems: 'center',
+      borderColor: colors.border,
+      borderRadius: 16,
+      borderWidth: 1,
+      justifyContent: 'center',
+      minHeight: 52,
+      marginTop: 12,
+      paddingHorizontal: 16,
+    },
+    secondaryText: { color: colors.ink, fontSize: 15, fontWeight: '700', textAlign: 'center' },
+    hint: { color: colors.muted, fontSize: 13, lineHeight: 20 },
     error: { alignSelf: 'stretch', color: colors.berry, marginTop: 12 },
   });
 }

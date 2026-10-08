@@ -2,15 +2,7 @@ import { AuditedPressable as Pressable } from '@/src/components/audited-pressabl
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
@@ -19,7 +11,6 @@ import {
   personalApi,
   secretApi,
   loadRefreshToken,
-  type Device,
   type Profile,
 } from '@/src/services/api';
 import { registerWebPasskey, webPasskeysSupported } from '@/src/services/web-passkeys';
@@ -30,6 +21,8 @@ import {
   isAndroidBiometricLoginEnabled,
 } from '@/src/services/android-biometric-login';
 import { darkTheme, lightTheme, type ColorTokens } from '@/src/theme';
+import { DeviceManager } from '@/src/features/profile/device-manager';
+import { makeStyles } from '@/src/features/profile/styles';
 import { useSessionStore } from '@/src/stores/session-store';
 import { useThemeStore } from '@/src/stores/theme-store';
 
@@ -497,62 +490,6 @@ function PasskeyManager({
   );
 }
 
-function DeviceManager({
-  token,
-  devices,
-  styles,
-}: {
-  token: string;
-  devices: Device[];
-  styles: ReturnType<typeof makeStyles>;
-}) {
-  const client = useQueryClient();
-  const [error, setError] = useState<string | null>(null);
-  const revoke = useMutation({
-    mutationFn: (deviceId: string) => authApi.revokeDevice(token, deviceId),
-    onSuccess: () => {
-      setError(null);
-      void client.invalidateQueries({ queryKey: ['auth', 'devices'] });
-    },
-    onError: () => setError('Cet appareil ne peut pas être révoqué pour le moment.'),
-  });
-  return (
-    <View style={styles.devicesCard}>
-      <Text style={styles.devicesTitle}>Appareils connectés</Text>
-      <Text style={styles.devicesIntro}>
-        Révoquez une ancienne session pour empêcher cet appareil d’accéder à votre compte.
-      </Text>
-      {devices.map((device) => (
-        <View key={device.id} style={styles.deviceRow}>
-          <View style={styles.deviceCopy}>
-            <Text style={styles.deviceName}>{device.name}</Text>
-            <Text style={styles.deviceMeta}>
-              {device.platform} · {device.current ? 'appareil actuel' : 'session distante'}
-            </Text>
-          </View>
-          {!device.current ? (
-            <Pressable
-              auditAction="profile.device.revoke"
-              accessibilityRole="button"
-              accessibilityLabel={`Révoquer ${device.name}`}
-              disabled={revoke.isPending}
-              onPress={() => revoke.mutate(device.id)}
-              style={[styles.revoke, revoke.isPending && styles.disabled]}
-            >
-              <Text style={styles.revokeText}>Révoquer</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ))}
-      {error ? (
-        <Text accessibilityRole="alert" style={styles.error}>
-          {error}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
 function ProfileEditor({
   profile,
   token,
@@ -696,141 +633,4 @@ function Field(props: {
       />
     </>
   );
-}
-
-function makeStyles(colors: ColorTokens) {
-  return StyleSheet.create({
-    screen: { backgroundColor: colors.linen, flex: 1 },
-    content: { padding: 24, paddingBottom: 36 },
-    back: { minHeight: 44, justifyContent: 'center' },
-    backText: { color: colors.spruce, fontWeight: '800' },
-    kicker: {
-      color: colors.clay,
-      fontSize: 11,
-      fontWeight: '800',
-      letterSpacing: 1.4,
-      marginTop: 14,
-    },
-    title: { color: colors.ink, fontSize: 32, fontWeight: '700', marginTop: 7 },
-    intro: { color: colors.muted, fontSize: 16, lineHeight: 23, marginTop: 8 },
-    themeCard: {
-      backgroundColor: colors.white,
-      borderColor: colors.border,
-      borderRadius: 16,
-      borderWidth: 1,
-      marginTop: 20,
-      padding: 14,
-    },
-    themeTitle: { color: colors.ink, fontSize: 14, fontWeight: '800' },
-    themeSwitch: {
-      backgroundColor: colors.linenMuted,
-      borderRadius: 12,
-      flexDirection: 'row',
-      marginTop: 10,
-      padding: 3,
-    },
-    themeOption: {
-      alignItems: 'center',
-      borderRadius: 9,
-      flex: 1,
-      minHeight: 38,
-      justifyContent: 'center',
-    },
-    themeOptionActive: { backgroundColor: colors.white },
-    themeOptionText: { color: colors.muted, fontSize: 13, fontWeight: '800' },
-    themeOptionTextActive: { color: colors.spruce },
-    devicesCard: {
-      backgroundColor: colors.white,
-      borderColor: colors.border,
-      borderRadius: 16,
-      borderWidth: 1,
-      marginTop: 14,
-      padding: 14,
-    },
-    devicesTitle: { color: colors.ink, fontSize: 14, fontWeight: '800' },
-    devicesIntro: { color: colors.muted, lineHeight: 19, marginTop: 5 },
-    deviceRow: {
-      alignItems: 'center',
-      borderTopColor: colors.border,
-      borderTopWidth: 1,
-      flexDirection: 'row',
-      gap: 10,
-      justifyContent: 'space-between',
-      marginTop: 12,
-      paddingTop: 12,
-    },
-    deviceCopy: { flex: 1 },
-    deviceName: { color: colors.ink, fontWeight: '800' },
-    deviceMeta: { color: colors.muted, fontSize: 12, marginTop: 3 },
-    revoke: { minHeight: 38, justifyContent: 'center', paddingHorizontal: 8 },
-    revokeText: { color: colors.berry, fontSize: 12, fontWeight: '800' },
-    memoryButton: {
-      backgroundColor: colors.white,
-      borderColor: colors.spruce,
-      borderRadius: 16,
-      borderWidth: 1,
-      marginTop: 14,
-      padding: 16,
-    },
-    memoryButtonTitle: { color: colors.ink, fontWeight: '800' },
-    memoryButtonText: { color: colors.muted, lineHeight: 20, marginTop: 5 },
-    loader: { marginTop: 30 },
-    alert: {
-      backgroundColor: colors.berrySoft,
-      borderColor: colors.berry,
-      borderRadius: 16,
-      borderWidth: 1,
-      marginTop: 18,
-      padding: 14,
-    },
-    alertTitle: { color: colors.ink, fontWeight: '800' },
-    alertText: { color: colors.muted, lineHeight: 19, marginTop: 5 },
-    retry: { alignSelf: 'flex-start', minHeight: 36, justifyContent: 'center', marginTop: 6 },
-    retryText: { color: colors.spruce, fontWeight: '800' },
-    form: {
-      backgroundColor: colors.white,
-      borderColor: colors.border,
-      borderLeftColor: colors.spruce,
-      borderLeftWidth: 4,
-      borderRadius: 16,
-      borderWidth: 1,
-      marginTop: 20,
-      padding: 16,
-    },
-    label: { color: colors.ink, fontSize: 14, fontWeight: '800', marginTop: 12 },
-    input: {
-      backgroundColor: colors.linen,
-      borderColor: colors.border,
-      borderRadius: 12,
-      borderWidth: 1,
-      color: colors.ink,
-      fontSize: 16,
-      marginTop: 7,
-      minHeight: 48,
-      paddingHorizontal: 12,
-    },
-    readonly: { color: colors.muted, marginTop: 7 },
-    help: { color: colors.muted, fontSize: 13, lineHeight: 19, marginTop: 16 },
-    error: { color: colors.berry, marginTop: 12 },
-    primary: {
-      alignItems: 'center',
-      backgroundColor: colors.spruce,
-      borderRadius: 16,
-      justifyContent: 'center',
-      marginTop: 18,
-      minHeight: 50,
-    },
-    primaryText: { color: colors.white, fontWeight: '800' },
-    signOut: {
-      alignItems: 'center',
-      borderColor: colors.berry,
-      borderRadius: 16,
-      borderWidth: 1,
-      justifyContent: 'center',
-      marginTop: 28,
-      minHeight: 50,
-    },
-    signOutText: { color: colors.berry, fontWeight: '800' },
-    disabled: { opacity: 0.6 },
-  });
 }

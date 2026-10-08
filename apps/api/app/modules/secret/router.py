@@ -64,7 +64,7 @@ from app.modules.conversations.models import (
     ConversationRole,
     Message,
 )
-from app.modules.conversations.router import (
+from app.modules.conversations.presentation import (
     conversation_recipient_name,
     conversation_response,
     message_response,

@@ -1,0 +1,33 @@
+# Add this file after docker/compose.yml for a VPS that keeps PostgreSQL on Supabase.
+# Docker Compose >= 2.24.4 is required for !override and !reset.
+services:
+  postgres:
+    profiles: [local-postgres]
+
+  migrate:
+    depends_on: !reset []
+    environment:
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set a separate Supabase migration URL}
+    networks: !override
+      - private
+      - egress
+
+  api:
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+
+  capture-worker:
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+
+  reminder-worker:
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+
+  memory-worker:
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully

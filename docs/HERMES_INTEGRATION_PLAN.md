@@ -2,6 +2,8 @@
 
 Révision : 19 septembre 2026. Plan cible lié à [PLAN.md](PLAN.md), au [contrat de capture](CAPTURE_MODULE_PLAN.md) et aux lots B04/B05/B10 de [TASKS.md](TASKS.md).
 
+**Statut au 8 octobre 2026 : plan historique.** Le prototype d'adaptateur a été retiré du code actif ; toute reprise doit repartir des contrats, permissions et tests décrits ici après vérification de la version Hermes visée. Le moteur conversationnel Cocoon actuel n'utilise pas Hermes.
+
 ## 1. Décision d’intégration
 
 Réutiliser Hermes comme moteur d’exécution agent derrière FastAPI : sessions, boucle de lecture d’outils, clarification et compression du contexte. Cocoon garde comptes, droits, mémoire confirmée, propositions, effets métier et calendrier d’exécution. Ollama reste le fournisseur local de dialogue ; ce n’est pas un concurrent de Hermes, qui l’orchestre.
@@ -25,11 +27,11 @@ Le moteur local existant reste sélectionnable explicitement pendant la transiti
 
 Hermes peut apprendre des procédures ; cela ne signifie pas réentraîner les poids du modèle. Une compétence est une instruction versionnée, distincte d’un souvenir personnel et d’un outil exécutable.
 
-## 3. État de l’adaptateur actuel et corrections requises
+## 3. Prototype retiré et corrections requises si reprise
 
-`apps/api/app/modules/assistant/hermes_gateway.py` implémente profils opaques, `profiles.create`, `profiles.configure`, `session.create`, `session.resume`, `prompt.submit`, collecte de deltas et lecture de `::ask`.
+Un ancien prototype `apps/api/app/modules/assistant/hermes_gateway.py` couvrait profils opaques, sessions et lecture de `::ask` ; il a été retiré du runtime Cocoon après vérification de l'absence d'import et de configuration active. Cette liste décrit des contrats à redéfinir et à tester si l'intégration Hermes est reprise, pas une capacité actuellement disponible. La colonne historique `AssistantThread.hermes_session_id` et sa migration sont conservées tant que les données existantes n'ont pas été inventoriées.
 
-Limites relevées dans le code :
+Limites relevées dans l'ancien prototype :
 
 - Catalogue fixé à `memory` et MCP vide : pas d’accès aux outils métier Cocoon.
 - Les deltas sont accumulés avant retour ; pas de streaming jusqu’au mobile.

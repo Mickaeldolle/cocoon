@@ -33,4 +33,5 @@ def test_scheduler_route_requires_shared_secret_and_limits_work(
     response = client.post(url, headers={"Authorization": f"Bearer {'a' * 32}"})
     assert response.status_code == 200
     assert response.json() == {"queued": 2, "sent": 1}
-    assert calls == [3]
+    assert client.get(url, headers={"Authorization": f"Bearer {'a' * 32}"}).status_code == 200
+    assert calls == [3, 3]

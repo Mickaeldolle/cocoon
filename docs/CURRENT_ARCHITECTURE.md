@@ -1,6 +1,6 @@
 # Architecture courante de Cocoon
 
-Date de référence : 2026-09-22.
+Date de référence : 2026-10-08 (infrastructure Redis retirée du Compose).
 
 Ce document décrit le chemin réel des requêtes dans le MVP. Il complète
 [`architecture.md`](architecture.md), qui décrit les décisions générales, et
@@ -17,7 +17,6 @@ Application Expo
                          FastAPI : auth → services → repositories → SQL
                                       │                 │
                                       ├─ PostgreSQL (cible bêta)
-                                      ├─ Redis (infrastructure réservée)
                                       └─ provider LLM/STT privé
                                          (jamais appelé par Expo)
 ```

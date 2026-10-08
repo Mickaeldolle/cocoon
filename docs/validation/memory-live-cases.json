@@ -1,0 +1,76 @@
+[
+  {
+    "id": "preference-ancienne",
+    "message": "Quel framework serveur est-ce que je préfère utiliser ?",
+    "recent_conversation": [],
+    "history_filler_count": 100,
+    "recalled_memories": [
+      {
+        "id": "memoire-fictive-1",
+        "summary": "Je préfère FastAPI pour mes petites API personnelles.",
+        "origin": "explicit",
+        "observed_at": "2025-01-01T10:00:00Z",
+        "scope_type": "personal"
+      }
+    ],
+    "personal_context": [],
+    "expected_terms": ["FastAPI"],
+    "forbidden_terms": []
+  },
+  {
+    "id": "information-inconnue",
+    "message": "Quelle est ma couleur préférée ?",
+    "recent_conversation": [],
+    "history_filler_count": 0,
+    "recalled_memories": [],
+    "personal_context": [],
+    "expected_terms": [],
+    "forbidden_terms": ["bleu", "rouge", "vert"]
+  },
+  {
+    "id": "preference-obsolete",
+    "message": "Quel framework est mon choix actuel ?",
+    "recent_conversation": [],
+    "history_filler_count": 0,
+    "recalled_memories": [
+      {
+        "id": "memoire-fictive-2",
+        "summary": "Je préférais Django auparavant.",
+        "origin": "explicit",
+        "observed_at": "2024-01-01T10:00:00Z",
+        "valid_until": "2025-01-01T10:00:00Z",
+        "scope_type": "personal"
+      },
+      {
+        "id": "memoire-fictive-3",
+        "summary": "Désormais, je préfère FastAPI.",
+        "origin": "explicit",
+        "observed_at": "2025-01-02T10:00:00Z",
+        "scope_type": "personal"
+      }
+    ],
+    "personal_context": [],
+    "expected_terms": ["FastAPI"],
+    "forbidden_terms": []
+  },
+  {
+    "id": "contexte-sature",
+    "message": "Quel est le nom du projet Archipel ?",
+    "recent_conversation": [],
+    "history_filler_count": 100,
+    "memory_filler_count": 11,
+    "recalled_memories": [
+      {
+        "id": "memoire-fictive-archipel",
+        "summary": "Le projet Archipel est une application personnelle de suivi de jardin.",
+        "origin": "explicit",
+        "observed_at": "2025-01-01T10:00:00Z",
+        "scope_type": "project"
+      }
+    ],
+    "personal_context": [],
+    "required_memory_ids": ["memoire-fictive-archipel"],
+    "expected_terms": ["Archipel"],
+    "forbidden_terms": []
+  }
+]

@@ -17,7 +17,6 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     database_url: str = "sqlite:///./cocoon.db"
-    redis_url: str = "redis://localhost:6379/0"
     cors_origins: list[str] = Field(default_factory=list)
     jwt_secret: str = Field(min_length=32)
     jwt_algorithm: str = "HS256"
@@ -45,12 +44,30 @@ class Settings(BaseSettings):
     llm_connection_timeout: float = Field(default=20, gt=0)
     llm_read_timeout: float | None = Field(default=None, ge=0)
     llm_pool_timeout: float = Field(default=20, gt=0)
+    # Provider-side generation cap; reserve this space when sizing the input context.
+    llm_max_output_tokens: int = Field(default=2048, ge=64, le=8192)
     llm_streaming: bool = True
     llm_healthcheck_enabled: bool = True
     assistant_max_concurrent_provider_requests: int = Field(default=2, ge=1, le=8)
     assistant_requests_per_minute: int = Field(default=30, ge=1, le=1000)
     assistant_max_tool_calls: int = Field(default=4, ge=1, le=10)
     assistant_tool_budget_ms: int = Field(default=2000, ge=100, le=10000)
+    # Optional local memory search, independent from the conversational provider.
+    memory_embeddings_enabled: bool = False
+    memory_embedding_base_url: str = "http://localhost:11434"
+    memory_embedding_model: str = "qwen3-embedding:0.6b"
+    memory_embedding_revision: str = "1"
+    memory_embedding_dimensions: int = Field(default=1024, ge=1, le=4096)
+    memory_embedding_timeout_seconds: float = Field(default=60, gt=0, le=600)
+    memory_query_timeout_seconds: float = Field(default=3, gt=0, le=30)
+    memory_vector_enabled: bool = False
+    memory_min_similarity: float = Field(default=0.65, ge=0, le=1)
+    # Legacy name: this setting currently bounds structured-memory UTF-8 bytes.
+    memory_context_tokens: int = Field(default=1200, ge=100, le=8000)
+    # UTF-8 prompt estimate, including the system instruction and current message.
+    # Configure below the model's real context window to leave room for its answer.
+    assistant_prompt_max_bytes: int = Field(default=24000, ge=2000, le=128000)
+    memory_worker_interval_seconds: int = Field(default=10, ge=1, le=3600)
     # The MVP uses one server-side OpenAI-compatible provider, normally Ollama.
     assistant_runtime: str = Field(default="local", pattern=r"^local$")
     # Speech-to-text is deliberately separate from the chat model. It is optional and is
@@ -64,6 +81,7 @@ class Settings(BaseSettings):
     web_push_private_key: str | None = None
     web_push_subject: str | None = None
     notification_worker_token: str | None = Field(default=None, min_length=32)
+    internal_worker_token: str | None = Field(default=None, min_length=32)
     worker_interval_seconds: int = Field(default=60, ge=5, le=3600)
     worker_lease_seconds: int = Field(default=600, ge=30, le=3600)
     metrics_token: str | None = Field(default=None, min_length=32)
@@ -77,6 +95,30 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.startswith("postgresql://"):
             return "postgresql+psycopg://" + value.removeprefix("postgresql://")
         return value
+
+    @field_validator("memory_embedding_base_url")
+    @classmethod
+    def validate_memory_endpoint(cls, value: str) -> str:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("Le runtime d'embedding requiert une URL HTTP(S) sans identifiants")
+        return value.rstrip("/")
+
+    @field_validator("memory_embedding_model", "memory_embedding_revision")
+    @classmethod
+    def validate_memory_model(cls, value: str) -> str:
+        if not value.strip() or len(value) > 160:
+            raise ValueError("Le modèle et sa révision doivent être non vides et bornés")
+        return value.strip()
 
     @field_validator("assistant_runtime", mode="before")
     @classmethod
@@ -92,7 +134,7 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("notification_worker_token", mode="before")
+    @field_validator("notification_worker_token", "internal_worker_token", mode="before")
     @classmethod
     def disable_blank_notification_worker_token(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():

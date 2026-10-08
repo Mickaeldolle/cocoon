@@ -271,6 +271,11 @@ def test_browser_sends_bounded_generic_test_push_immediately(
 
 def test_web_push_test_targets_only_its_browser(client: TestClient, monkeypatch) -> None:
     _headers, user_id = _account(client, "targetedtest")
+    assert client.put(
+        "/api/auth/consents/notifications.push",
+        json={"policy_version": 1, "source": "web"},
+        headers=_headers,
+    ).status_code == 200
     session_factory = client.app.state.test_session_factory
     with session_factory() as session:
         browser = session.scalar(select(Device).where(Device.user_id == UUID(user_id)))

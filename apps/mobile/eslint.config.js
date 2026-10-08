@@ -6,10 +6,18 @@ const prettierConfig = require('eslint-config-prettier/flat');
 module.exports = defineConfig([
   {
     ignores: ['.expo/**', 'android/**', 'dist/**', 'ios/**', 'node_modules/**'],
+  },
+  {
     linterOptions: {
       reportUnusedDisableDirectives: 'warn',
     },
   },
   expoConfig,
   prettierConfig,
+  {
+    files: ['public/sw.js'],
+    languageOptions: {
+      globals: { clients: 'readonly' },
+    },
+  },
 ]);
