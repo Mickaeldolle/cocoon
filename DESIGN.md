@@ -36,7 +36,7 @@ La conversation doit évoquer un carnet de messages personnel : le contenu reste
 
 ## Source des couleurs et des dimensions
 
-`apps/mobile/src/theme.ts` reste la source exécutable des couleurs, des espacements et des rayons communs. Les valeurs ci-dessus documentent les choix actuels. Les dimensions propres aux bulles et au compositeur vivent dans l'écran de conversation tant qu'elles n'ont pas été reprises ailleurs.
+`apps/mobile/src/theme.ts` reste la source exécutable des couleurs, des espacements et des rayons communs. Les valeurs ci-dessus documentent les choix actuels. Les dimensions propres aux bulles et au compositeur de conversation vivent dans `apps/mobile/src/components/conversation-detail-styles.ts` ; celles du chat assistant vivent dans `apps/mobile/features/assistant/assistant-styles.ts` tant qu'elles n'ont pas été reprises ailleurs.
 
 ## Messagerie
 

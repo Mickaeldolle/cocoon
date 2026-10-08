@@ -2,6 +2,18 @@ import * as SecureStore from 'expo-secure-store';
 import { File } from 'expo-file-system';
 import { fetch as expoFetch } from 'expo/fetch';
 import { Platform } from 'react-native';
+import { createPersonalApi } from './personal-api';
+import { createNeuralApi } from './neural-api';
+export type {
+  Profile,
+  PersonalMemory,
+  PersonalMemoryPage,
+  PersonalTask,
+  PersonalProject,
+  GroceryItem,
+  TrainingSession,
+  WeightCheckIn,
+} from './personal-api';
 
 const refreshTokenKey = 'cocoon.refresh-token';
 const apiUrl = process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, '');
@@ -186,54 +198,15 @@ export type PersonalNotification = {
   read_at: string | null;
   created_at: string;
 };
-export type NeuralProposal = {
-  id: string;
-  capability: string;
-  payload: Record<string, unknown>;
-  payload_version: number;
-  reason: string;
-  status: string;
-  confirmed_at?: string | null;
-};
-export type CaptureResult = {
-  id: string;
-  run_id: string;
-  summary: string;
-  clarification: string | null;
-  proposals: NeuralProposal[];
-  mode: 'rules' | 'llm';
-};
-export type CaptureProgress = { stage: string; text: string };
-export type CaptureRunEvent = {
-  sequence: number;
-  event_type: string;
-  payload: Record<string, unknown>;
-  created_at: string;
-};
-export type CaptureRun = {
-  id: string;
-  capture_id: string;
-  status: string;
-  attempt: number;
-  error_code: string | null;
-  created_at: string;
-  finished_at: string | null;
-  events: CaptureRunEvent[];
-};
-export type CaptureStreamHandlers = {
-  onRunId?: (runId: string) => void;
-  onProgress?: (event: CaptureProgress) => void;
-  onFragment?: (text: string) => void;
-};
-export type HomeSignal = {
-  id: string;
-  kind: 'now' | 'review' | 'confirm';
-  title: string;
-  reason: string;
-  source: string;
-  proposal_id: string | null;
-  payload_version: number | null;
-};
+export type {
+  NeuralProposal,
+  CaptureResult,
+  CaptureProgress,
+  CaptureRunEvent,
+  CaptureRun,
+  CaptureStreamHandlers,
+  HomeSignal,
+} from './neural-api';
 
 export type MealPlanEntry = {
   day: string;
@@ -246,78 +219,6 @@ export type MealPlanEntry = {
 export type GroceryMealPlan = {
   meals: MealPlanEntry[];
   mode: 'rules' | 'llm';
-};
-
-export type Profile = {
-  display_name: string;
-  email: string;
-  birth_date: string | null;
-  height_cm: number | null;
-  weight_kg: number | null;
-  target_weight_kg: number | null;
-  weekly_training_target: number;
-};
-
-export type PersonalMemory = {
-  id: string;
-  capture_id: string;
-  source_run_id: string | null;
-  source_message_id: string | null;
-  summary: string;
-  reason: string;
-  kind: string;
-  layer: string;
-  memory_type: string;
-  owner_type: string;
-  scope_type: string;
-  scope_id: string | null;
-  source_type: string;
-  confidence: number;
-  valid_from: string | null;
-  valid_until: string | null;
-  supersedes_id: string | null;
-  created_at: string;
-};
-
-export type PersonalTask = {
-  id: string;
-  title: string;
-  detail: string | null;
-  due_date: string | null;
-  completed: boolean;
-  created_at: string;
-};
-
-export type PersonalProject = {
-  id: string;
-  name: string;
-  description: string | null;
-  status: 'active' | 'paused' | 'completed';
-  created_at: string;
-  updated_at: string;
-};
-
-export type GroceryItem = {
-  id: string;
-  label: string;
-  checked: boolean;
-  created_at: string;
-};
-
-export type TrainingSession = {
-  id: string;
-  label: string;
-  training_type: 'renforcement' | 'course' | 'mobilite';
-  timing: string;
-  completed: boolean;
-  created_at: string;
-};
-
-export type WeightCheckIn = {
-  id: string;
-  weight_kg: number;
-  recorded_on: string;
-  created_at: string;
 };
 
 class ApiError extends Error {
@@ -394,6 +295,23 @@ async function call<T>(
     throw new ApiError(response.status, detail);
   }
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
+}
+
+async function authenticatedStreamFetch(path: string, options: RequestInit, expiredToken: string) {
+  const url = `${apiUrl}${path}`;
+  const response = await expoFetch(url, options);
+  if (response.status !== 401 || !renewAccessToken) return response;
+  const body: unknown = await response.json().catch(() => null);
+  const detail =
+    typeof body === 'object' && body && 'detail' in body
+      ? String(body.detail)
+      : 'Une erreur est survenue.';
+  if (!detail.startsWith('Session invalide')) throw new ApiError(401, detail);
+  const token = await renewAccessToken(expiredToken);
+  if (!token) throw new ApiError(401, detail);
+  const headers = new Headers(options.headers);
+  headers.set('Authorization', `Bearer ${token}`);
+  return expoFetch(url, { ...options, headers });
 }
 
 function withAccessToken(accessToken: string, options: RequestInit = {}): RequestInit {
@@ -746,16 +664,20 @@ export const assistantApi = {
     retry = false,
     model?: string,
   ): Promise<AssistantChat> => {
-    const response = await expoFetch(`${apiUrl}/api/assistant/chat/stream`, {
-      method: 'POST',
-      signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-        ...(idempotencyKey ? { 'X-Assistant-Idempotency-Key': idempotencyKey } : {}),
+    const response = await authenticatedStreamFetch(
+      '/api/assistant/chat/stream',
+      {
+        method: 'POST',
+        signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+          ...(idempotencyKey ? { 'X-Assistant-Idempotency-Key': idempotencyKey } : {}),
+        },
+        body: JSON.stringify({ text, retry, ...(model ? { model } : {}) }),
       },
-      body: JSON.stringify({ text, retry, ...(model ? { model } : {}) }),
-    });
+      accessToken,
+    );
     if (!response.ok || !response.body) {
       const body: unknown = await response.json().catch(() => null);
       const detail =
@@ -909,225 +831,9 @@ export const assistantApi = {
     ),
 };
 
-export const neuralApi = {
-  capture: (accessToken: string, text: string, timezone: string, idempotencyKey?: string) =>
-    call<CaptureResult>(
-      '/api/captures',
-      withAccessToken(accessToken, {
-        method: 'POST',
-        body: JSON.stringify({ text, timezone }),
-        headers: idempotencyKey ? { 'X-Capture-Idempotency-Key': idempotencyKey } : undefined,
-      }),
-    ),
-  queueCapture: (accessToken: string, text: string, timezone: string, idempotencyKey?: string) =>
-    call<CaptureRun>(
-      '/api/captures/queue',
-      withAccessToken(accessToken, {
-        method: 'POST',
-        body: JSON.stringify({ text, timezone }),
-        headers: idempotencyKey ? { 'X-Capture-Idempotency-Key': idempotencyKey } : undefined,
-      }),
-    ),
-  streamCapture: async (
-    accessToken: string,
-    text: string,
-    timezone: string,
-    handlers: CaptureStreamHandlers = {},
-    signal?: AbortSignal,
-    options: { idempotencyKey?: string; lastEventId?: number } = {},
-  ): Promise<CaptureResult> => {
-    const effectiveIdempotencyKey =
-      options.idempotencyKey ?? `mobile-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    let cursor = options.lastEventId ?? 0;
-    let lastError: unknown = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        const response = await expoFetch(`${apiUrl}/api/captures/stream`, {
-          method: 'POST',
-          signal,
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-            'X-Capture-Idempotency-Key': effectiveIdempotencyKey,
-            ...(cursor > 0 ? { 'Last-Event-ID': String(cursor) } : {}),
-          },
-          body: JSON.stringify({ text, timezone }),
-        });
-        if (!response.ok || !response.body) {
-          const body: unknown = await response.json().catch(() => null);
-          const detail =
-            typeof body === 'object' && body && 'detail' in body
-              ? String(body.detail)
-              : 'La capture ne peut pas être traitée pour le moment.';
-          throw new ApiError(response.status, detail);
-        }
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let completed: CaptureResult | null = null;
-        const consume = (block: string) => {
-          const id = block.match(/^id:\s*(\d+)$/m);
-          if (id) cursor = Number(id[1]);
-          const event = block.match(/^event:\s*(\w+)\ndata:\s*([\s\S]+)$/m);
-          if (!event) return;
-          const data = JSON.parse(event[2]) as Record<string, unknown>;
-          if (typeof data.run_id === 'string') handlers.onRunId?.(data.run_id);
-          if (
-            event[1] === 'progress' &&
-            typeof data.stage === 'string' &&
-            typeof data.text === 'string'
-          ) {
-            handlers.onProgress?.({ stage: data.stage, text: data.text });
-          } else if (event[1] === 'fragment' && typeof data.text === 'string') {
-            handlers.onFragment?.(data.text);
-          } else if (event[1] === 'run_event' && typeof data.event_type === 'string') {
-            const progressText: Record<string, string> = {
-              capture_persisted: 'Capture enregistrée',
-              understand_started: 'Je comprends votre demande',
-              completed: 'Je prépare vos choix',
-            };
-            const progress = progressText[data.event_type];
-            if (progress) handlers.onProgress?.({ stage: data.event_type, text: progress });
-          } else if (event[1] === 'complete') {
-            completed = data as unknown as CaptureResult;
-          } else if (event[1] === 'error') {
-            throw new ApiError(502, String(data.detail || 'La capture a échoué.'));
-          }
-        };
-        while (true) {
-          const chunk = await reader.read();
-          buffer += decoder.decode(chunk.value, { stream: !chunk.done });
-          const blocks = buffer.split('\n\n');
-          buffer = blocks.pop() ?? '';
-          blocks.forEach(consume);
-          if (chunk.done) break;
-        }
-        if (completed) return completed;
-        throw new ApiError(502, 'La capture n’a pas fourni de résultat exploitable.');
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        lastError = error;
-        if (error instanceof ApiError && error.status >= 400 && error.status < 500) throw error;
-      }
-    }
-    throw lastError instanceof Error
-      ? lastError
-      : new ApiError(502, 'La capture n’a pas pu être reprise.');
-  },
-  home: (accessToken: string) =>
-    call<{ signals: HomeSignal[] }>('/api/home', withAccessToken(accessToken)),
-  getRun: (accessToken: string, runId: string) =>
-    call<CaptureRun>(`/api/runs/${runId}`, withAccessToken(accessToken)),
-  cancelRun: (accessToken: string, runId: string) =>
-    call<CaptureRun>(`/api/runs/${runId}/cancel`, withAccessToken(accessToken, { method: 'POST' })),
-  confirm: (accessToken: string, proposalId: string, payloadVersion?: number) =>
-    call<NeuralProposal>(
-      `/api/neural-proposals/${proposalId}/confirm`,
-      withAccessToken(accessToken, {
-        method: 'POST',
-        headers: payloadVersion ? { 'X-Proposal-Version': String(payloadVersion) } : undefined,
-      }),
-    ),
-  cancel: (accessToken: string, proposalId: string) =>
-    call<NeuralProposal>(
-      `/api/neural-proposals/${proposalId}/cancel`,
-      withAccessToken(accessToken, { method: 'POST' }),
-    ),
-};
+export const neuralApi = createNeuralApi(call, withAccessToken, authenticatedStreamFetch, ApiError);
 
-export const personalApi = {
-  getProfile: (accessToken: string) =>
-    call<Profile>('/api/personal/profile', withAccessToken(accessToken)),
-  updateProfile: (accessToken: string, payload: Profile) =>
-    call<Profile>(
-      '/api/personal/profile',
-      withAccessToken(accessToken, { method: 'PUT', body: JSON.stringify(payload) }),
-    ),
-  listMemories: (accessToken: string, limit = 50) =>
-    call<{ memories: PersonalMemory[] }>(
-      `/api/memories?limit=${encodeURIComponent(String(limit))}`,
-      withAccessToken(accessToken),
-    ),
-  updateMemory: (
-    accessToken: string,
-    id: string,
-    payload: { summary: string; memory_type?: string; layer?: string; confidence: number },
-  ) =>
-    call<PersonalMemory>(
-      `/api/memories/${id}`,
-      withAccessToken(accessToken, { method: 'PATCH', body: JSON.stringify(payload) }),
-    ),
-  forgetMemory: (accessToken: string, id: string) =>
-    call<{ id: string; state: 'active' | 'stale' | 'dismissed' }>(
-      `/api/memories/${id}`,
-      withAccessToken(accessToken, { method: 'DELETE' }),
-    ),
-  listTasks: (accessToken: string) =>
-    call<PersonalTask[]>('/api/personal/tasks', withAccessToken(accessToken)),
-  createTask: (accessToken: string, payload: Pick<PersonalTask, 'title' | 'detail' | 'due_date'>) =>
-    call<PersonalTask>(
-      '/api/personal/tasks',
-      withAccessToken(accessToken, { method: 'POST', body: JSON.stringify(payload) }),
-    ),
-  updateTask: (accessToken: string, id: string, completed: boolean) =>
-    call<PersonalTask>(
-      `/api/personal/tasks/${id}`,
-      withAccessToken(accessToken, { method: 'PATCH', body: JSON.stringify({ completed }) }),
-    ),
-  listProjects: (accessToken: string) =>
-    call<PersonalProject[]>('/api/personal/projects', withAccessToken(accessToken)),
-  createProject: (accessToken: string, payload: Pick<PersonalProject, 'name' | 'description'>) =>
-    call<PersonalProject>(
-      '/api/personal/projects',
-      withAccessToken(accessToken, { method: 'POST', body: JSON.stringify(payload) }),
-    ),
-  updateProject: (
-    accessToken: string,
-    id: string,
-    payload: Partial<Pick<PersonalProject, 'name' | 'description' | 'status'>>,
-  ) =>
-    call<PersonalProject>(
-      `/api/personal/projects/${id}`,
-      withAccessToken(accessToken, { method: 'PATCH', body: JSON.stringify(payload) }),
-    ),
-  listGroceries: (accessToken: string) =>
-    call<GroceryItem[]>('/api/personal/groceries', withAccessToken(accessToken)),
-  createGrocery: (accessToken: string, label: string) =>
-    call<GroceryItem>(
-      '/api/personal/groceries',
-      withAccessToken(accessToken, { method: 'POST', body: JSON.stringify({ label }) }),
-    ),
-  updateGrocery: (accessToken: string, id: string, checked: boolean) =>
-    call<GroceryItem>(
-      `/api/personal/groceries/${id}`,
-      withAccessToken(accessToken, { method: 'PATCH', body: JSON.stringify({ checked }) }),
-    ),
-  listTrainings: (accessToken: string) =>
-    call<TrainingSession[]>('/api/personal/trainings', withAccessToken(accessToken)),
-  createTraining: (
-    accessToken: string,
-    payload: Pick<TrainingSession, 'label' | 'training_type' | 'timing'>,
-  ) =>
-    call<TrainingSession>(
-      '/api/personal/trainings',
-      withAccessToken(accessToken, { method: 'POST', body: JSON.stringify(payload) }),
-    ),
-  updateTraining: (accessToken: string, id: string, completed: boolean) =>
-    call<TrainingSession>(
-      `/api/personal/trainings/${id}`,
-      withAccessToken(accessToken, { method: 'PATCH', body: JSON.stringify({ completed }) }),
-    ),
-  listWeightCheckIns: (accessToken: string) =>
-    call<WeightCheckIn[]>('/api/personal/weight-check-ins', withAccessToken(accessToken)),
-  createWeightCheckIn: (
-    accessToken: string,
-    payload: { weight_kg: number; recorded_on?: string },
-  ) =>
-    call<WeightCheckIn>(
-      '/api/personal/weight-check-ins',
-      withAccessToken(accessToken, { method: 'POST', body: JSON.stringify(payload) }),
-    ),
-};
+export const personalApi = createPersonalApi(call, withAccessToken);
 
 export async function saveRefreshToken(token: string): Promise<void> {
   if (Platform.OS === 'web') {

@@ -22,6 +22,7 @@ from app.modules.conversations.router import router as conversations_router
 from app.modules.family_spaces.router import router as family_spaces_router
 from app.modules.memory.router import router as memory_router
 from app.modules.neural.router import router as neural_router
+from app.modules.neural.worker_router import router as background_jobs_router
 from app.modules.personal.router import router as personal_router
 from app.modules.realtime.router import router as realtime_router
 from app.modules.secret.router import router as secret_router
@@ -157,6 +158,7 @@ app.include_router(assistant_router)
 app.include_router(notification_worker_router)
 app.include_router(personal_router)
 app.include_router(neural_router)
+app.include_router(background_jobs_router)
 app.include_router(memory_router)
 app.include_router(conversations_router)
 app.include_router(secret_router)

@@ -17,7 +17,8 @@ from sqlalchemy import func, or_, select, text
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.modules.assistant.models import AssistantPreference, NotificationOutbox, RecurringReminder
-from app.modules.auth.models import Device, WebPushSubscription
+from app.modules.auth.consents import minimum_policy_version
+from app.modules.auth.models import Device, UserConsent, WebPushSubscription
 from app.modules.auth.web_push import valid_web_push_endpoint
 from app.modules.personal.models import PersonalTask
 
@@ -274,6 +275,22 @@ def send_pending_notifications(
             processed += 1
             session.refresh(item)
             if item.cancelled_at is not None:
+                continue
+            push_consent = session.scalar(
+                select(UserConsent.id).where(
+                    UserConsent.user_id == item.user_id,
+                    UserConsent.policy_key == "notifications.push",
+                    UserConsent.policy_version >= minimum_policy_version("notifications.push"),
+                    UserConsent.revoked_at.is_(None),
+                )
+            )
+            if push_consent is None:
+                item.cancelled_at = now
+                item.last_error_code = "consent_absent"
+                item.provider_status = "cancelled"
+                item.lease_owner = None
+                item.lease_until = None
+                session.commit()
                 continue
             devices = list(
                 session.scalars(

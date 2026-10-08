@@ -1,0 +1,182 @@
+{
+  "generated_at": "2026-10-08T09:58:17.778344+00:00",
+  "dry_run": true,
+  "method": "Two UTF-8 bytes per available token are a sizing heuristic, not a token count. Only provider usage can verify actual tokens; answers still need human review.",
+  "results": [
+    {
+      "case": "preference-ancienne",
+      "context_window_tokens": 2048,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 3584,
+      "prompt_bytes": 2202,
+      "selected_memories": [
+        "memoire-fictive-1"
+      ],
+      "required_memories_selected": {},
+      "selected_history_messages": 10
+    },
+    {
+      "case": "information-inconnue",
+      "context_window_tokens": 2048,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 3584,
+      "prompt_bytes": 1418,
+      "selected_memories": [],
+      "required_memories_selected": {},
+      "selected_history_messages": 0
+    },
+    {
+      "case": "preference-obsolete",
+      "context_window_tokens": 2048,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 3584,
+      "prompt_bytes": 1785,
+      "selected_memories": [
+        "memoire-fictive-2",
+        "memoire-fictive-3"
+      ],
+      "required_memories_selected": {},
+      "selected_history_messages": 0
+    },
+    {
+      "case": "contexte-sature",
+      "context_window_tokens": 2048,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 3584,
+      "prompt_bytes": 3534,
+      "selected_memories": [
+        "memoire-fictive-archipel",
+        "memoire-fictive-bruit-0",
+        "memoire-fictive-bruit-1",
+        "memoire-fictive-bruit-2",
+        "memoire-fictive-bruit-3",
+        "memoire-fictive-bruit-4",
+        "memoire-fictive-bruit-5"
+      ],
+      "required_memories_selected": {
+        "memoire-fictive-archipel": true
+      },
+      "selected_history_messages": 1
+    },
+    {
+      "case": "preference-ancienne",
+      "context_window_tokens": 4096,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 7680,
+      "prompt_bytes": 2202,
+      "selected_memories": [
+        "memoire-fictive-1"
+      ],
+      "required_memories_selected": {},
+      "selected_history_messages": 10
+    },
+    {
+      "case": "information-inconnue",
+      "context_window_tokens": 4096,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 7680,
+      "prompt_bytes": 1418,
+      "selected_memories": [],
+      "required_memories_selected": {},
+      "selected_history_messages": 0
+    },
+    {
+      "case": "preference-obsolete",
+      "context_window_tokens": 4096,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 7680,
+      "prompt_bytes": 1785,
+      "selected_memories": [
+        "memoire-fictive-2",
+        "memoire-fictive-3"
+      ],
+      "required_memories_selected": {},
+      "selected_history_messages": 0
+    },
+    {
+      "case": "contexte-sature",
+      "context_window_tokens": 4096,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 7680,
+      "prompt_bytes": 5603,
+      "selected_memories": [
+        "memoire-fictive-archipel",
+        "memoire-fictive-bruit-0",
+        "memoire-fictive-bruit-1",
+        "memoire-fictive-bruit-2",
+        "memoire-fictive-bruit-3",
+        "memoire-fictive-bruit-4",
+        "memoire-fictive-bruit-5",
+        "memoire-fictive-bruit-6",
+        "memoire-fictive-bruit-7",
+        "memoire-fictive-bruit-8",
+        "memoire-fictive-bruit-9",
+        "memoire-fictive-bruit-10"
+      ],
+      "required_memories_selected": {
+        "memoire-fictive-archipel": true
+      },
+      "selected_history_messages": 10
+    },
+    {
+      "case": "preference-ancienne",
+      "context_window_tokens": 8192,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 15872,
+      "prompt_bytes": 2202,
+      "selected_memories": [
+        "memoire-fictive-1"
+      ],
+      "required_memories_selected": {},
+      "selected_history_messages": 10
+    },
+    {
+      "case": "information-inconnue",
+      "context_window_tokens": 8192,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 15872,
+      "prompt_bytes": 1418,
+      "selected_memories": [],
+      "required_memories_selected": {},
+      "selected_history_messages": 0
+    },
+    {
+      "case": "preference-obsolete",
+      "context_window_tokens": 8192,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 15872,
+      "prompt_bytes": 1785,
+      "selected_memories": [
+        "memoire-fictive-2",
+        "memoire-fictive-3"
+      ],
+      "required_memories_selected": {},
+      "selected_history_messages": 0
+    },
+    {
+      "case": "contexte-sature",
+      "context_window_tokens": 8192,
+      "output_reserve_tokens": 256,
+      "prompt_byte_limit": 15872,
+      "prompt_bytes": 5603,
+      "selected_memories": [
+        "memoire-fictive-archipel",
+        "memoire-fictive-bruit-0",
+        "memoire-fictive-bruit-1",
+        "memoire-fictive-bruit-2",
+        "memoire-fictive-bruit-3",
+        "memoire-fictive-bruit-4",
+        "memoire-fictive-bruit-5",
+        "memoire-fictive-bruit-6",
+        "memoire-fictive-bruit-7",
+        "memoire-fictive-bruit-8",
+        "memoire-fictive-bruit-9",
+        "memoire-fictive-bruit-10"
+      ],
+      "required_memories_selected": {
+        "memoire-fictive-archipel": true
+      },
+      "selected_history_messages": 10
+    }
+  ]
+}

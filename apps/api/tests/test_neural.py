@@ -2,19 +2,22 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.commands.run_capture_worker import process_once
 from app.main import app
 from app.modules.assistant.models import ProposalExecution
-from app.modules.auth.models import User
+from app.modules.auth.models import User, UserConsent
 from app.modules.neural import service as neural_service
 from app.modules.neural import worker as neural_worker
 from app.modules.neural.models import (
     Capture,
     CaptureRun,
+    CaptureRunEvent,
     CaptureRunStatus,
+    CaptureSource,
     MemoryItem,
     NeuralProposal,
 )
@@ -42,6 +45,7 @@ def headers(client: TestClient, email: str) -> dict[str, str]:
         user = session.scalar(select(User).where(User.email == email))
         assert user is not None
         user.enable_assistant = True
+        session.add(UserConsent(user_id=user.id, policy_key="assistant.memory", policy_version=1))
         session.commit()
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
@@ -111,6 +115,79 @@ def test_confirmed_capture_memory_keeps_source_run_provenance(client: TestClient
         memory = session.scalar(select(MemoryItem).where(MemoryItem.user_id.is_not(None)))
         assert memory is not None
         assert memory.source_run_id == UUID(response.json()["run_id"])
+
+
+@pytest.mark.parametrize("foreign_link", ["capture_id", "source_run_id"])
+def test_confirmation_rejects_a_proposal_linked_to_another_accounts_source(
+    client: TestClient, foreign_link: str
+) -> None:
+    owner = headers(client, f"proposal-owner-{foreign_link}@example.com")
+    other = headers(client, f"proposal-other-{foreign_link}@example.com")
+    own_capture = client.post(
+        "/api/captures",
+        headers=owner,
+        json={"text": "Je préfère le thé", "timezone": "Europe/Paris"},
+    ).json()
+    foreign_capture = client.post(
+        "/api/captures",
+        headers=other,
+        json={"text": "Je préfère le café", "timezone": "Europe/Paris"},
+    ).json()
+    proposal_id = UUID(
+        next(item["id"] for item in own_capture["proposals"] if item["capability"] == "note")
+    )
+    with app.state.test_session_factory() as session:
+        proposal = session.get(NeuralProposal, proposal_id)
+        assert proposal is not None
+        setattr(
+            proposal,
+            foreign_link,
+            UUID(foreign_capture["id" if foreign_link == "capture_id" else "run_id"]),
+        )
+        owner_id = proposal.user_id
+        session.commit()
+
+    response = client.post(f"/api/neural-proposals/{proposal_id}/confirm", headers=owner)
+    assert response.status_code == 422
+    assert response.json()["detail"] == "La proposition est invalide."
+    with app.state.test_session_factory() as session:
+        assert session.scalar(
+            select(MemoryItem.id).where(MemoryItem.user_id == owner_id)
+        ) is None
+        assert session.get(NeuralProposal, proposal_id).status.value == "failed"
+
+
+def test_capture_replay_and_confirmation_keep_other_accounts_proposal_private(
+    client: TestClient,
+) -> None:
+    owner = headers(client, "proposal-sibling-owner@example.com")
+    other = headers(client, "proposal-sibling-other@example.com")
+    own_capture = client.post(
+        "/api/captures", headers=owner, json={"text": "Je préfère le thé"}
+    ).json()
+    foreign_capture = client.post(
+        "/api/captures", headers=other, json={"text": "Je préfère le café"}
+    ).json()
+    own_proposal_id = next(
+        item["id"] for item in own_capture["proposals"] if item["capability"] == "note"
+    )
+    foreign_proposal_id = UUID(
+        next(item["id"] for item in foreign_capture["proposals"] if item["capability"] == "note")
+    )
+    with app.state.test_session_factory() as session:
+        foreign_proposal = session.get(NeuralProposal, foreign_proposal_id)
+        assert foreign_proposal is not None
+        foreign_proposal.capture_id = UUID(own_capture["id"])
+        session.commit()
+
+    with app.state.test_session_factory() as session:
+        replay = process_capture_run(session, UUID(own_capture["run_id"]))
+        assert [str(item.id) for item in replay.proposals] == [own_proposal_id]
+
+    confirmed = client.post(f"/api/neural-proposals/{own_proposal_id}/confirm", headers=owner)
+    assert confirmed.status_code == 200
+    with app.state.test_session_factory() as session:
+        assert session.get(NeuralProposal, foreign_proposal_id).status.value == "pending"
 
 
 def test_home_is_limited_to_three_signals(client: TestClient) -> None:
@@ -423,8 +500,7 @@ def test_capture_proposal_can_be_cancelled_and_cannot_be_confirmed_afterward(
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
     assert (
-        client.post(f"/api/neural-proposals/{proposal_id}/confirm", headers=auth).status_code
-        == 409
+        client.post(f"/api/neural-proposals/{proposal_id}/confirm", headers=auth).status_code == 409
     )
     repeated = client.post(f"/api/neural-proposals/{proposal_id}/cancel", headers=auth)
     assert repeated.status_code == 200
@@ -453,9 +529,7 @@ def test_running_capture_run_can_be_cancelled_by_its_owner(client: TestClient) -
 
 def test_separate_capture_worker_reclaims_a_queued_run(client: TestClient) -> None:
     auth = headers(client, "capture-worker@example.com")
-    result = client.post(
-        "/api/captures", headers=auth, json={"text": "Une idée à revoir"}
-    ).json()
+    result = client.post("/api/captures", headers=auth, json={"text": "Une idée à revoir"}).json()
     session = app.state.test_session_factory()
     try:
         run = session.get(CaptureRun, UUID(result["run_id"]))
@@ -467,14 +541,59 @@ def test_separate_capture_worker_reclaims_a_queued_run(client: TestClient) -> No
     finally:
         session.close()
 
-    assert (
-        process_once("test-capture-worker", app.state.test_session_factory)
-        == result["run_id"]
-    )
+    assert process_once("test-capture-worker", app.state.test_session_factory) == result["run_id"]
     resumed = client.get(f"/api/runs/{result['run_id']}", headers=auth)
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "completed"
     assert "claimed" in [event["event_type"] for event in resumed.json()["events"]]
+
+
+def test_worker_rejects_run_linked_to_another_users_capture(client: TestClient) -> None:
+    marie = headers(client, "capture-owner-a@example.com")
+    headers(client, "capture-owner-b@example.com")
+    queued = client.post(
+        "/api/captures/queue",
+        headers=marie,
+        json={"text": "Une pensée privée"},
+    )
+    assert queued.status_code == 202
+    run_id = UUID(queued.json()["id"])
+    with app.state.test_session_factory() as session:
+        other_user = session.scalar(select(User).where(User.email == "capture-owner-b@example.com"))
+        assert other_user is not None
+        foreign_capture = Capture(
+            user_id=other_user.id,
+            source=CaptureSource.TEXT,
+            content="Contenu privé de B",
+            timezone="Europe/Paris",
+        )
+        session.add(foreign_capture)
+        session.flush()
+        foreign_capture_id = foreign_capture.id
+        run = session.get(CaptureRun, run_id)
+        assert run is not None
+        run.capture_id = foreign_capture_id
+        session.commit()
+
+    with app.state.test_session_factory() as session:
+        with pytest.raises(HTTPException) as error:
+            process_capture_run(session, run_id, worker_id="mismatch-test")
+        assert "ne peut pas être traitée" in str(error.value)
+        run = session.get(CaptureRun, run_id)
+        assert run is not None
+        assert run.status is CaptureRunStatus.FAILED
+        assert run.error_code == "source_owner_mismatch"
+        assert session.scalars(
+            select(NeuralProposal).where(NeuralProposal.capture_id == foreign_capture_id)
+        ).first() is None
+        event = session.scalar(
+            select(CaptureRunEvent).where(
+                CaptureRunEvent.run_id == run_id,
+                CaptureRunEvent.event_type == "failed",
+            )
+        )
+        assert event is not None
+        assert event.payload == {"error_code": "source_owner_mismatch", "retryable": False}
 
 
 def test_capture_queue_endpoint_defers_processing_to_worker(client: TestClient) -> None:
@@ -486,9 +605,7 @@ def test_capture_queue_endpoint_defers_processing_to_worker(client: TestClient) 
     )
     assert response.status_code == 202
     assert response.json()["status"] == "queued"
-    assert [event["event_type"] for event in response.json()["events"]] == [
-        "capture_persisted"
-    ]
+    assert [event["event_type"] for event in response.json()["events"]] == ["capture_persisted"]
 
     run_id = response.json()["id"]
     assert process_once("queued-capture-worker", client.app.state.test_session_factory) == run_id
@@ -508,9 +625,7 @@ def test_cancellation_during_understanding_does_not_persist_proposals(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     auth = headers(client, "cancel-during-understanding@example.com")
-    result = client.post(
-        "/api/captures", headers=auth, json={"text": "Une idée à annuler"}
-    ).json()
+    result = client.post("/api/captures", headers=auth, json={"text": "Une idée à annuler"}).json()
     run_id = UUID(result["run_id"])
 
     session = app.state.test_session_factory()
@@ -603,6 +718,37 @@ def test_capture_idempotency_key_reuses_completed_run(client: TestClient) -> Non
         assert session.query(Capture).count() == 1
     finally:
         session.close()
+
+
+def test_capture_with_same_key_reclaims_expired_lease(client: TestClient) -> None:
+    auth = headers(client, "expired-capture@example.com")
+    keyed_auth = {**auth, "X-Capture-Idempotency-Key": "expired-capture-1"}
+    payload = {"text": "Préparer le dossier demain", "timezone": "Europe/Paris"}
+    queued = client.post("/api/captures/queue", headers=keyed_auth, json=payload)
+    assert queued.status_code == 202
+    run_id = UUID(queued.json()["id"])
+    with app.state.test_session_factory() as session:
+        run = session.get(CaptureRun, run_id)
+        assert run is not None
+        run.status = CaptureRunStatus.RUNNING
+        run.lease_owner = "interrupted-worker"
+        run.lease_until = datetime.now(UTC) + timedelta(minutes=1)
+        session.commit()
+
+    assert client.post("/api/captures", headers=keyed_auth, json=payload).status_code == 409
+    with app.state.test_session_factory() as session:
+        run = session.get(CaptureRun, run_id)
+        assert run is not None
+        run.lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+
+    resumed = client.post("/api/captures", headers=keyed_auth, json=payload)
+    assert resumed.status_code == 201
+    assert resumed.json()["run_id"] == str(run_id)
+    assert client.get(f"/api/runs/{run_id}", headers=auth).json()["status"] == "completed"
+    with app.state.test_session_factory() as session:
+        assert session.query(CaptureRun).count() == 1
+        assert session.query(Capture).count() == 1
 
 
 def test_capture_without_idempotency_key_reuses_same_completed_content(client: TestClient) -> None:

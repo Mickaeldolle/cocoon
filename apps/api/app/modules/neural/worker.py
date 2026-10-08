@@ -27,21 +27,9 @@ from app.modules.neural.models import (
     CaptureSource,
     NeuralProposal,
 )
-from app.modules.neural.schemas import CaptureCreate, CaptureResponse, ProposalResponse
+from app.modules.neural.presentation import proposal_response
+from app.modules.neural.schemas import CaptureCreate, CaptureResponse
 from app.modules.neural.service import parse_reminder_at, safe_timezone, understand
-
-
-def proposal_response(item: NeuralProposal) -> ProposalResponse:
-    return ProposalResponse(
-        id=item.id,
-        capability=item.capability,
-        payload=item.payload,
-        payload_version=item.payload_version,
-        reason=item.reason,
-        status=item.status,
-        confirmed_at=item.confirmed_at,
-        label=str(item.payload.get("label") or item.payload.get("title") or item.capability),
-    )
 
 
 def proposal_key(capture_id: UUID, capability: str, payload: dict[str, object]) -> str:
@@ -75,10 +63,37 @@ def _add_event(
     )
 
 
-def _response_from_run(session: Session, run: CaptureRun) -> CaptureResponse:
+def _lease_active(run: CaptureRun, now: datetime) -> bool:
+    until = run.lease_until
+    if until is None:
+        return False
+    # SQLite tests return naive datetimes even for a timezone-aware column.
+    return (until.replace(tzinfo=UTC) if until.tzinfo is None else until) > now
+
+
+def _capture_for_run(session: Session, run: CaptureRun) -> Capture:
     capture = session.get(Capture, run.capture_id)
     if capture is None:
         raise HTTPException(status_code=500, detail="La capture associée est introuvable.")
+    if capture.user_id != run.user_id:
+        run.status = CaptureRunStatus.FAILED
+        run.error_code = "source_owner_mismatch"
+        run.finished_at = datetime.now(UTC)
+        run.lease_owner = None
+        run.lease_until = None
+        _add_event(
+            session,
+            run.id,
+            "failed",
+            {"error_code": "source_owner_mismatch", "retryable": False},
+        )
+        session.commit()
+        raise HTTPException(status_code=409, detail="Cette capture ne peut pas être traitée.")
+    return capture
+
+
+def _response_from_run(session: Session, run: CaptureRun) -> CaptureResponse:
+    capture = _capture_for_run(session, run)
     completed = session.scalar(
         select(CaptureRunEvent)
         .where(CaptureRunEvent.run_id == run.id, CaptureRunEvent.event_type == "completed")
@@ -88,7 +103,10 @@ def _response_from_run(session: Session, run: CaptureRun) -> CaptureResponse:
     proposals = list(
         session.scalars(
             select(NeuralProposal)
-            .where(NeuralProposal.capture_id == capture.id)
+            .where(
+                NeuralProposal.user_id == run.user_id,
+                NeuralProposal.capture_id == capture.id,
+            )
             .order_by(NeuralProposal.created_at.asc())
             .limit(3)
         )
@@ -124,10 +142,14 @@ def create_capture_run(
             if existing.status is CaptureRunStatus.COMPLETED:
                 return existing
             if existing.status is CaptureRunStatus.RUNNING:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Cette capture est déjà en cours de traitement.",
-                )
+                if _lease_active(existing, datetime.now(UTC)):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Cette capture est déjà en cours de traitement.",
+                    )
+                # The prior HTTP request can disappear on a serverless host.
+                # process_capture_run will reclaim the expired lease below.
+                return existing
             if existing.status is CaptureRunStatus.CANCELLED:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -197,8 +219,7 @@ def _claim_run(session: Session, run_id: UUID, worker_id: str) -> CaptureRun:
     if (
         run.status is CaptureRunStatus.RUNNING
         and run.lease_owner not in {None, worker_id}
-        and run.lease_until is not None
-        and run.lease_until > now
+        and _lease_active(run, now)
     ):
         raise HTTPException(status_code=409, detail="Cette exécution est déjà prise en charge.")
     if run.attempt > run.max_attempts:
@@ -243,9 +264,7 @@ def process_capture_run(
     if run.status is CaptureRunStatus.COMPLETED:
         return _response_from_run(session, run)
 
-    capture = session.get(Capture, run.capture_id)
-    if capture is None:
-        raise HTTPException(status_code=500, detail="La capture associée est introuvable.")
+    capture = _capture_for_run(session, run)
 
     try:
         session.expire_all()

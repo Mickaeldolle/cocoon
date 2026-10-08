@@ -1,5 +1,11 @@
 # Déploiement initial
 
+Pour la mémoire personnelle, l'extension pgvector et les trois cibles actuelles
+(développement local, Vercel/Supabase, VPS Docker), suivre le
+[plan de déploiement mémoire](deployment-memory.md). Il précise que Vercel ne lance pas
+le worker permanent et que l'activation vectorielle y reste désactivée sans runtime
+d'embedding privé et authentifié.
+
 Pour l'essai gratuit demandé, suivre d'abord [Vercel + Supabase + ZeroGPU](deployment-free.md) et [la procédure APK Android](android-apk.md). Les [autres options](deployment-options.md) concernent une étape ultérieure. Les commandes Compose ci-dessous décrivent seulement le socle auto-hébergé actuel ; elles ne prouvent pas un déploiement fonctionnel.
 
 ## Préparation
@@ -28,9 +34,10 @@ fournisseur externe.
 docker compose -f docker/compose.yml --env-file .env up -d --build
 ```
 
-Le service Compose `migrate` applique `alembic upgrade head` une seule fois ; l’API et les
+Le service Compose `migrate` applique `alembic upgrade head` au lancement ; l’API et les
 workers attendent sa réussite avant de démarrer. La commande peut être relancée manuellement,
-elle est idempotente. En local, Cocoon utilise par défaut les ports 8080/8443
+elle est idempotente sur un schéma compatible. Le worker mémoire est facultatif et utilise le
+profil Compose `memory`. En local, Cocoon utilise par défaut les ports 8080/8443
 afin de ne pas entrer en conflit avec un autre reverse proxy. Sur le VPS, configurez
 `COCOON_HTTP_PORT=80` et `COCOON_HTTPS_PORT=443`.
 
@@ -50,7 +57,7 @@ docker compose -f docker/compose.yml --env-file .env exec api python -m app.comm
 
 Ce rôle ne contourne pas les autorisations métier ordinaires. Il donne uniquement accès aux endpoints explicitement protégés par `require_superadmin`, dont `/api/admin/status` sert actuellement de sonde pour la future interface d'administration.
 
-Seuls Caddy (80/443 selon la configuration) doit être exposé sur Internet. PostgreSQL, Redis et l’API restent sur le réseau Docker privé. Sauvegardez régulièrement PostgreSQL et testez une restauration avant la mise en production.
+Seul Caddy (80/443 selon la configuration) doit être exposé sur Internet. PostgreSQL et l’API restent sur le réseau Docker privé. Sauvegardez régulièrement PostgreSQL et testez une restauration avant la mise en production. L'ancien service Redis inutilisé a été retiré de Compose ; son volume déclaré est conservé et ses données éventuelles doivent être inventoriées avant toute suppression physique.
 
 ### Métriques internes
 
@@ -113,10 +120,11 @@ JSON. Il ne remplace pas une mesure de premier token ou une qualification après
   également privé, avec `STT_API_URL` et `STT_MODEL` (et `STT_API_KEY` seulement si nécessaire).
   Cocoon transmet seulement un enregistrement court créé explicitement par la personne, ne le
   persiste ni dans PostgreSQL ni dans les journaux, et retourne le texte à modifier avant envoi.
-- Les services `capture-worker` et `reminder-worker` démarrent avec Compose. Le premier reprend les
-  captures placées en file après une coupure réseau ou un redémarrage ; le second prépare les rappels
-  confirmés et le
-  brief quotidien dans une outbox durable, puis les transmet à Expo Push uniquement pour les
+- Les services `capture-worker` et `reminder-worker` démarrent avec Compose. Le worker mémoire
+  s'ajoute uniquement avec `--profile memory`, après qualification d'Ollama et de pgvector.
+  Le worker de capture reprend les captures placées en file après une coupure réseau ou un
+  redémarrage ; celui de rappel prépare les rappels confirmés et le brief quotidien dans une
+  outbox durable, puis les transmet à Expo Push uniquement pour les
   appareils ayant enregistré un token. Les contenus de push restent génériques.
 - Configurez les appareils réels avec un development build et un token Expo avant de compter
   sur les notifications. Testez l’arrivée d’un rappel, la désactivation du brief, la modification

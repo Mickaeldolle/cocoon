@@ -23,7 +23,14 @@ function load(relativePath, mocks = {}, globals = {}) {
     {
       module,
       exports: module.exports,
-      require: (name) => (Object.hasOwn(mocks, name) ? mocks[name] : require(name)),
+      require: (name) =>
+        name === './personal-api'
+          ? { createPersonalApi: () => ({}) }
+          : name === './neural-api'
+            ? { createNeuralApi: () => ({}) }
+            : Object.hasOwn(mocks, name)
+              ? mocks[name]
+              : require(name),
       setTimeout,
       clearTimeout,
       AbortController,
@@ -118,6 +125,65 @@ test('expired access token is renewed and the request is retried once', async ()
   assert.deepEqual(await api.authApi.me('expired'), { id: 'user' });
   assert.deepEqual(tokens, ['Bearer expired', 'Bearer fresh']);
   assert.equal(renewals, 1);
+});
+
+test('assistant stream renews an expired token without changing the message key', async () => {
+  const requests = [];
+  const api = load(
+    'src/services/api.ts',
+    {
+      'expo-file-system': { File: class {} },
+      'expo-secure-store': {},
+      'expo/fetch': {
+        fetch: async (url, options) => {
+          requests.push({ url, headers: new Headers(options.headers), body: options.body });
+          if (requests.length === 1) {
+            return {
+              status: 401,
+              json: async () => ({ detail: 'Session invalide ou expirée.' }),
+            };
+          }
+          const chunks = [new TextEncoder().encode('event: complete\ndata: {"id":"reply-1"}\n\n')];
+          return {
+            ok: true,
+            status: 200,
+            body: {
+              getReader: () => ({
+                read: async () =>
+                  chunks.length ? { value: chunks.shift(), done: false } : { done: true },
+              }),
+            },
+          };
+        },
+      },
+      'react-native': { Platform: { OS: 'web' } },
+    },
+    {
+      fetch: async () => assert.fail('Unexpected JSON request'),
+      TextDecoder,
+      process: { env: { EXPO_PUBLIC_API_URL: 'https://api.example.com' } },
+    },
+  );
+  let renewals = 0;
+  api.setAccessTokenRenewer(async (expired) => {
+    assert.equal(expired, 'expired');
+    renewals += 1;
+    return 'fresh';
+  });
+
+  const reply = await api.assistantApi.streamChat('expired', 'Bonjour', {}, undefined, 'message-1');
+  assert.equal(reply.id, 'reply-1');
+  assert.equal(renewals, 1);
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every(({ url }) => url.endsWith('/api/assistant/chat/stream')));
+  assert.ok(
+    requests.every(({ headers }) => headers.get('X-Assistant-Idempotency-Key') === 'message-1'),
+  );
+  assert.deepEqual(
+    requests.map(({ headers }) => headers.get('Authorization')),
+    ['Bearer expired', 'Bearer fresh'],
+  );
+  assert.equal(requests[0].body, requests[1].body);
 });
 
 test('passkey login challenge does not require an email address', async () => {
@@ -477,6 +543,109 @@ test('session restore uses the fresh token profile and supports older API respon
   }
 });
 
+test('a delayed session restore cannot replace a newer login', async () => {
+  let state;
+  let releaseRestore;
+  let refreshStarted;
+  const started = new Promise((resolve) => (refreshStarted = resolve));
+  const restored = new Promise((resolve) => (releaseRestore = resolve));
+  let savedToken = 'old-refresh';
+  const store = load('src/stores/session-store.ts', {
+    zustand: {
+      create: (initialize) => {
+        state = initialize(
+          (change) => Object.assign(state, change),
+          () => state,
+        );
+        return state;
+      },
+    },
+    '@/src/services/android-biometric-login': {
+      isAndroidBiometricLoginEnabled: async () => false,
+    },
+    '@/src/services/notifications': { unsubscribeCurrentWebPush: async () => undefined },
+    '@/src/services/api': {
+      ApiError: class ApiError extends Error {},
+      loadRefreshToken: async () => 'old-refresh',
+      saveRefreshToken: async (value) => (savedToken = value),
+      setAccessTokenRenewer: () => undefined,
+      authApi: {
+        refresh: async () => {
+          refreshStarted();
+          return restored;
+        },
+      },
+    },
+  }).useSessionStore;
+
+  const restoring = store.restore();
+  await started;
+  await store.start({
+    access_token: 'access-b',
+    refresh_token: 'refresh-b',
+    user: { id: 'account-b' },
+  });
+  releaseRestore({
+    access_token: 'access-a',
+    refresh_token: 'refresh-a',
+    user: { id: 'account-a' },
+  });
+  await restoring;
+  assert.equal(store.user.id, 'account-b');
+  assert.equal(store.accessToken, 'access-b');
+  assert.equal(savedToken, 'refresh-b');
+});
+
+test('a delayed logout cannot erase a newer login', async () => {
+  let state;
+  let releaseLogout;
+  let logoutStarted;
+  const started = new Promise((resolve) => (logoutStarted = resolve));
+  const loggedOut = new Promise((resolve) => (releaseLogout = resolve));
+  let storedToken = 'refresh-a';
+  const store = load('src/stores/session-store.ts', {
+    zustand: {
+      create: (initialize) => {
+        state = initialize(
+          (change) => Object.assign(state, change),
+          () => state,
+        );
+        return state;
+      },
+    },
+    '@/src/services/android-biometric-login': {
+      disableAndroidBiometricLogin: async () => undefined,
+    },
+    '@/src/services/notifications': { unsubscribeCurrentWebPush: async () => undefined },
+    '@/src/services/api': {
+      clearRefreshToken: async () => (storedToken = null),
+      saveRefreshToken: async (value) => (storedToken = value),
+      setAccessTokenRenewer: () => undefined,
+      authApi: {
+        logout: async () => {
+          logoutStarted();
+          await loggedOut;
+        },
+      },
+    },
+  }).useSessionStore;
+  state.accessToken = 'access-a';
+  state.user = { id: 'account-a' };
+
+  const signingOut = store.end();
+  await started;
+  await store.start({
+    access_token: 'access-b',
+    refresh_token: 'refresh-b',
+    user: { id: 'account-b' },
+  });
+  releaseLogout();
+  await signingOut;
+  assert.equal(store.user.id, 'account-b');
+  assert.equal(store.accessToken, 'access-b');
+  assert.equal(storedToken, 'refresh-b');
+});
+
 test('expired refresh token clears the session for login and passkey recovery', async () => {
   let state;
   let cleared = false;
@@ -566,6 +735,94 @@ test('concurrent expired requests share one refresh token rotation', async () =>
   assert.equal(refreshes, 1);
   assert.equal(store.accessToken, 'fresh');
   assert.equal(await renewer('token-from-another-session'), null);
+});
+
+test('a delayed token renewal cannot replace a newer login', async () => {
+  let renewer;
+  let releaseRefresh;
+  let refreshStarted;
+  let storedToken = 'refresh-a';
+  const started = new Promise((resolve) => (refreshStarted = resolve));
+  const refreshed = new Promise((resolve) => (releaseRefresh = resolve));
+  const store = load('src/stores/session-store.ts', {
+    zustand: {
+      create: (initialize) => {
+        const state = {};
+        Object.assign(
+          state,
+          initialize(
+            (change) => Object.assign(state, change),
+            () => state,
+          ),
+        );
+        state.getState = () => state;
+        state.setState = (change) => Object.assign(state, change);
+        return state;
+      },
+    },
+    '@/src/services/android-biometric-login': {},
+    '@/src/services/notifications': { unsubscribeCurrentWebPush: async () => undefined },
+    '@/src/services/api': {
+      ApiError: class ApiError extends Error {},
+      setAccessTokenRenewer: (callback) => (renewer = callback),
+      loadRefreshToken: async () => storedToken,
+      saveRefreshToken: async (value) => (storedToken = value),
+      authApi: {
+        refresh: async () => {
+          refreshStarted();
+          return refreshed;
+        },
+      },
+    },
+  }).useSessionStore;
+  store.setState({ accessToken: 'access-a', user: { id: 'account-a' } });
+
+  const oldRenewal = renewer('access-a');
+  await started;
+  await store.start({
+    access_token: 'access-b',
+    refresh_token: 'refresh-b',
+    user: { id: 'account-b' },
+  });
+  releaseRefresh({ access_token: 'access-a-new', refresh_token: 'refresh-a-new' });
+  assert.equal(await oldRenewal, null);
+  assert.equal(store.user.id, 'account-b');
+  assert.equal(store.accessToken, 'access-b');
+  assert.equal(storedToken, 'refresh-b');
+});
+
+test('a stale logout cannot unsubscribe a new web push subscription', async () => {
+  let releaseRegistration;
+  const registrationReady = new Promise((resolve) => (releaseRegistration = resolve));
+  let unsubscribed = false;
+  const { unsubscribeCurrentWebPush } = load(
+    'src/services/notifications.ts',
+    {
+      'expo-constants': { appOwnership: 'standalone' },
+      'react-native': { Platform: { OS: 'web' } },
+      '@/src/services/api': {},
+    },
+    {
+      navigator: {
+        serviceWorker: {
+          getRegistration: async () => {
+            await registrationReady;
+            return {
+              pushManager: {
+                getSubscription: async () => ({ unsubscribe: async () => (unsubscribed = true) }),
+              },
+            };
+          },
+        },
+      },
+    },
+  );
+  let current = true;
+  const oldLogout = unsubscribeCurrentWebPush(() => current);
+  current = false;
+  releaseRegistration();
+  await oldLogout;
+  assert.equal(unsubscribed, false);
 });
 
 test('one button: short tap sends; hold only reports unavailable transcription', () => {

@@ -29,17 +29,23 @@ def minimum_policy_version(policy_key: str) -> int:
 
 
 def require_active_consent(
-    session: Session, user_id: UUID, policy_key: str, *, version: int | None = None
+    session: Session,
+    user_id: UUID,
+    policy_key: str,
+    *,
+    version: int | None = None,
+    for_update: bool = False,
 ) -> UserConsent:
     required_version = version or minimum_policy_version(policy_key)
-    consent = session.scalar(
-        select(UserConsent).where(
-            UserConsent.user_id == user_id,
-            UserConsent.policy_key == policy_key,
-            UserConsent.policy_version >= required_version,
-            UserConsent.revoked_at.is_(None),
-        )
+    query = select(UserConsent).where(
+        UserConsent.user_id == user_id,
+        UserConsent.policy_key == policy_key,
+        UserConsent.policy_version >= required_version,
+        UserConsent.revoked_at.is_(None),
     )
+    if for_update:
+        query = query.with_for_update()
+    consent = session.scalar(query)
     if consent is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

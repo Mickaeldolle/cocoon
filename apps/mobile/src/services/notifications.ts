@@ -81,11 +81,12 @@ export function homePushAction(
   permission: PersonalNotificationPermission,
   platform: string,
 ): HomePushAction {
-  if (consents.some((item) => item.policy_key === 'notifications.push' && item.revoked_at)) {
-    return 'skip';
-  }
+  const consent = consents.find((item) => item.policy_key === 'notifications.push');
+  if (consent?.revoked_at) return 'skip';
   if (permission === 'unsupported') return 'skip';
   if (permission === 'denied') return 'blocked';
+  // An OS-level permission does not grant Cocoon consent for a new account.
+  if (!consent) return 'offer';
   if (permission === 'prompt' && platform === 'web') return 'offer';
   return 'register';
 }
@@ -175,10 +176,14 @@ export async function registerForPersonalNotifications(accessToken: string): Pro
   await authApi.registerPushToken(accessToken, pushToken.data);
 }
 
-export async function unsubscribeCurrentWebPush(): Promise<void> {
+export async function unsubscribeCurrentWebPush(
+  isCurrent: () => boolean = () => true,
+): Promise<void> {
   if (Platform.OS !== 'web' || typeof navigator === 'undefined' || !('serviceWorker' in navigator))
     return;
   const registration = await navigator.serviceWorker.getRegistration('/');
+  if (!isCurrent()) return;
   const subscription = await registration?.pushManager.getSubscription();
+  if (!isCurrent()) return;
   await subscription?.unsubscribe();
 }

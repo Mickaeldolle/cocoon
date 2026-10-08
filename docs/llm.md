@@ -37,6 +37,7 @@ route réseau directe vers le moteur ou configurer un proxy explicite devant lui
 | `LLM_CONNECTION_TIMEOUT` | Délai de connexion en secondes, défaut 20 |
 | `LLM_READ_TIMEOUT` | Délai entre lectures, défaut 600 ; 0 désactive cette limite |
 | `LLM_POOL_TIMEOUT` | Attente d'une connexion disponible, défaut 20 |
+| `LLM_MAX_OUTPUT_TOKENS` | Maximum de tokens générés par appel, défaut 2048 ; régler selon le modèle et la longueur des réponses souhaitée |
 | `LLM_STREAMING` | `true` par défaut ; `false` renvoie la réponse d'un seul coup |
 | `LLM_HEALTHCHECK_ENABLED` | Active la vérification de `/status` |
 | `ASSISTANT_REQUESTS_PER_MINUTE` | Générations par compte et par processus API, défaut 30 |
@@ -44,6 +45,8 @@ route réseau directe vers le moteur ou configurer un proxy explicite devant lui
 Une configuration partielle ou une URL invalide arrête le démarrage avec une
 erreur explicite. Sans URL et sans modèle OpenAI-compatible, le backend démarre
 et l'assistant répond qu'il est indisponible.
+
+Le plafond de sortie est envoyé comme `max_tokens` aux endpoints OpenAI compatibles et comme `options.num_predict` à l'API native Ollama. Il s'applique au chat et aux autres usages du même provider ; une valeur trop basse peut tronquer une réponse structurée. Le budget d'entrée `ASSISTANT_PROMPT_MAX_BYTES` est une estimation en octets et doit être réglé séparément après mesure des tokens réels du modèle. Voir les références [OpenRouter](https://openrouter.ai/docs/api/api-reference/chat/send-chat-completion-request?explorer=true) et [Ollama](https://github.com/ollama/ollama/blob/main/docs/openapi.yaml).
 
 ### Ollama local
 
@@ -164,7 +167,7 @@ docker compose up --build
 ```
 
 Compose construit le frontend Expo web, lance Caddy, FastAPI, PostgreSQL,
-Redis, les migrations et les workers. Le navigateur utilise l'adresse
+les migrations et les workers. Le navigateur utilise l'adresse
 `EXPO_PUBLIC_API_URL` ; depuis un téléphone elle doit être joignable.
 En production, donner un nom de domaine à `CADDY_SITE_ADDRESS`, publier les
 ports 80/443 et définir `EXPO_PUBLIC_API_URL` sur son origine HTTPS.

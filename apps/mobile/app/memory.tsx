@@ -1,11 +1,12 @@
 import { AuditedPressable as Pressable } from '@/src/components/audited-pressable';
 import { reportButtonPress } from '@/src/services/ui-audit';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,6 +16,12 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { personalApi, type PersonalMemory } from '@/src/services/api';
+import {
+  formatMemoryDate,
+  memoryOriginLabel,
+  memorySourceLabel,
+  memoryTypeLabel,
+} from '@/src/features/memory/presentation';
 import { useSessionStore } from '@/src/stores/session-store';
 import { useThemeStore } from '@/src/stores/theme-store';
 import { darkTheme, lightTheme, type ColorTokens } from '@/src/theme';
@@ -30,12 +37,15 @@ export default function MemoryScreen() {
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
-  const memories = useQuery({
+  const memories = useInfiniteQuery({
     queryKey: ['personal', 'memories', userId],
-    enabled: Boolean(token),
-    queryFn: () => personalApi.listMemories(token!),
+    enabled: Boolean(token && userId),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => personalApi.listMemories(token!, 50, pageParam),
+    getNextPageParam: (lastPage) => lastPage.next_offset ?? undefined,
     retry: false,
   });
+  const memoryItems = memories.data?.pages.flatMap((page) => page.memories) ?? [];
   const update = useMutation({
     mutationFn: ({
       id,
@@ -67,6 +77,22 @@ export default function MemoryScreen() {
     setNotice(null);
   };
   const askForget = (memory: PersonalMemory) => {
+    const confirmForget = () => {
+      reportButtonPress('memory.forget.confirm');
+      forget.mutate(memory.id);
+    };
+    if (Platform.OS === 'web') {
+      if (
+        window.confirm(
+          'Oublier cette mémoire ? Elle ne sera plus utilisée dans les prochains contextes.',
+        )
+      ) {
+        confirmForget();
+      } else {
+        reportButtonPress('memory.forget.cancel');
+      }
+      return;
+    }
     Alert.alert(
       'Oublier cette mémoire ?',
       'Elle ne sera plus utilisée dans les prochains contextes.',
@@ -79,10 +105,7 @@ export default function MemoryScreen() {
         {
           text: 'Oublier',
           style: 'destructive',
-          onPress: () => {
-            reportButtonPress('memory.forget.confirm');
-            forget.mutate(memory.id);
-          },
+          onPress: confirmForget,
         },
       ],
     );
@@ -93,7 +116,7 @@ export default function MemoryScreen() {
         <Pressable
           auditAction="memory.back"
           accessibilityRole="button"
-          onPress={() => router.back()}
+          onPress={() => router.replace('/profile')}
           style={styles.back}
         >
           <Text style={styles.backText}>‹ Profil</Text>
@@ -112,7 +135,7 @@ export default function MemoryScreen() {
         {memories.isPending ? (
           <ActivityIndicator color={colors.spruce} style={styles.loader} />
         ) : null}
-        {memories.isError ? (
+        {memories.isError && !memories.data ? (
           <View style={styles.alert}>
             <Text style={styles.alertTitle}>La mémoire ne peut pas être chargée.</Text>
             <Pressable
@@ -124,7 +147,7 @@ export default function MemoryScreen() {
             </Pressable>
           </View>
         ) : null}
-        {!memories.isPending && !memories.isError && memories.data?.memories.length === 0 ? (
+        {!memories.isPending && !memories.isError && memoryItems.length === 0 ? (
           <View style={styles.empty}>
             <Text style={styles.emptyTitle}>Aucune mémoire personnelle.</Text>
             <Text style={styles.emptyText}>
@@ -132,12 +155,12 @@ export default function MemoryScreen() {
             </Text>
           </View>
         ) : null}
-        {memories.data?.memories.map((memory) => {
+        {memoryItems.map((memory) => {
           const isEditing = editing === memory.id;
           return (
             <View key={memory.id} style={styles.card}>
               <Text style={styles.kind}>
-                {memory.memory_type} · confiance {memory.confidence}%
+                {memoryTypeLabel(memory.memory_type)} · confiance {memory.confidence}%
               </Text>
               {isEditing ? (
                 <TextInput
@@ -151,8 +174,17 @@ export default function MemoryScreen() {
                 <Text style={styles.summary}>{memory.summary}</Text>
               )}
               <Text style={styles.reason}>{memory.reason}</Text>
+              <Text style={styles.source}>Origine : {memoryOriginLabel(memory.origin)}</Text>
               <Text style={styles.source}>
-                Source : {memory.source_run_id ? 'capture traitée' : memory.source_type}
+                Source : {memorySourceLabel(memory.source_type, memory.source_run_id)}
+              </Text>
+              <Text style={styles.source}>
+                Portée : {memory.scope_type === 'project' ? 'projet personnel' : 'personnelle'} ·
+                État : {memory.state === 'active' ? 'active' : 'inactive'}
+              </Text>
+              <Text style={styles.source}>
+                {memory.observed_at ? 'Observée' : 'Ajoutée'} le{' '}
+                {formatMemoryDate(memory.observed_at ?? memory.created_at)}
               </Text>
               <View style={styles.actions}>
                 {isEditing ? (
@@ -194,6 +226,32 @@ export default function MemoryScreen() {
             </View>
           );
         })}
+        {memories.isFetchNextPageError ? (
+          <View style={styles.alert}>
+            <Text style={styles.alertTitle}>La suite des mémoires ne peut pas être chargée.</Text>
+            <Pressable
+              auditAction="memory.more.retry"
+              accessibilityRole="button"
+              onPress={() => void memories.fetchNextPage()}
+              style={styles.retry}
+            >
+              <Text style={styles.retryText}>Réessayer</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {memories.hasNextPage && !memories.isFetchNextPageError ? (
+          <Pressable
+            auditAction="memory.more"
+            accessibilityRole="button"
+            disabled={memories.isFetchingNextPage}
+            onPress={() => void memories.fetchNextPage()}
+            style={[styles.more, memories.isFetchingNextPage && styles.disabled]}
+          >
+            <Text style={styles.moreText}>
+              {memories.isFetchingNextPage ? 'Chargement…' : 'Voir plus de mémoires'}
+            </Text>
+          </Pressable>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -259,6 +317,17 @@ function makeStyles(colors: ColorTokens) {
     },
     reason: { color: colors.muted, lineHeight: 20, marginTop: 8 },
     source: { color: colors.clay, fontSize: 12, marginTop: 10 },
+    more: {
+      alignItems: 'center',
+      borderColor: colors.spruce,
+      borderRadius: 12,
+      borderWidth: 1,
+      justifyContent: 'center',
+      minHeight: 44,
+      marginTop: 18,
+      paddingHorizontal: 14,
+    },
+    moreText: { color: colors.spruce, fontWeight: '800' },
     actions: { alignItems: 'center', flexDirection: 'row', gap: 10, marginTop: 14 },
     primary: {
       alignItems: 'center',

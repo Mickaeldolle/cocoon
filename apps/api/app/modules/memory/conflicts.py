@@ -18,11 +18,30 @@ _PREFERENCE_MARKERS = (
 )
 _SUBJECT_GROUPS = {
     "beverage": ("cafe", "the", "tisane"),
-    "diet": ("repas", "vegetarien", "porc", "noix", "viande"),
-    "schedule": ("matin", "soir", "tot", "tard", "heure"),
-    "technology": ("python", "fastapi", "vue", "react", "docker", "kubernetes"),
+    "work_schedule": ("travailler", "travaille", "coder"),
+    "frontend_framework": ("vue", "react", "angular", "svelte"),
+    "backend_framework": ("fastapi", "flask", "django"),
+    "programming_language": ("python", "javascript", "typescript", "java", "php", "rust"),
     "exercise": ("courir", "course", "sport", "velo", "natation"),
 }
+
+_CHANGE = re.compile(r"\b(maintenant|desormais|finalement|plutot|remplace)\b|a partir de")
+_TEMPORARY = re.compile(
+    r"\b(aujourd hui|demain|cette semaine|ce mois|temporairement|pour ce projet)\b"
+)
+
+
+def preference_relationship(previous: str, current: str) -> str:
+    if _normalized(previous) == _normalized(current):
+        return "same"
+    if preference_subject(previous) != preference_subject(current):
+        return "new"
+    normalized = _normalized(current)
+    if _TEMPORARY.search(normalized):
+        return "exception"
+    if _CHANGE.search(normalized):
+        return "update"
+    return "ambiguous"
 
 
 def _normalized(value: str) -> str:
@@ -54,6 +73,8 @@ def supersede_conflicting_preference(
     summary: str,
     *,
     now: datetime | None = None,
+    scope_type: str = "personal",
+    scope_id: UUID | None = None,
 ) -> MemoryItem | None:
     """Mark the latest matching preference stale and return it for provenance."""
     subject = preference_subject(summary)
@@ -65,7 +86,8 @@ def supersede_conflicting_preference(
         .where(
             MemoryItem.user_id == user_id,
             MemoryItem.owner_type == "user",
-            MemoryItem.scope_type == "personal",
+            MemoryItem.scope_type == scope_type,
+            MemoryItem.scope_id == scope_id,
             MemoryItem.memory_type == MemoryType.PREFERENCE,
             MemoryItem.state == MemoryState.ACTIVE,
             MemoryItem.deleted_at.is_(None),
@@ -78,7 +100,7 @@ def supersede_conflicting_preference(
         (candidate for candidate in candidates if preference_subject(candidate.summary) == subject),
         None,
     )
-    if existing is None:
+    if existing is None or preference_relationship(existing.summary, summary) != "update":
         return None
     timestamp = effective_now
     existing.state = MemoryState.STALE
